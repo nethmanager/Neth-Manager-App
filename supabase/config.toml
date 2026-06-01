@@ -1,0 +1,21 @@
+[functions.gmail-oauth-callback]
+verify_jwt = false
+
+[functions.gmail-oauth-start]
+verify_jwt = true
+
+[functions.gmail-sync-unread]
+verify_jwt = true
+
+[functions.gmail-trash-email]
+verify_jwt = true
+
+[functions.google-calendar-oauth-start]
+verify_jwt = true
+
+[functions.google-calendar-oauth-callback]
+verify_jwt = false
+
+[functions.google-calendar-sync]
+verify_jwt = true
+

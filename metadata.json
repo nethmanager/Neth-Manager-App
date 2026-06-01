@@ -1,0 +1,8 @@
+{
+  "name": "Neth Business Manager",
+  "description": "A comprehensive business dashboard for managing projects, tasks, email communications, and platforms with integrated AI assistance.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
