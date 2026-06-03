@@ -79,6 +79,7 @@ export default function AIAssistantPage() {
   const isSpeakingRef = useRef(false);
   const loadingRef = useRef(false);
   const callModeEnabledRef = useRef(false);
+  const lastVoiceSendTimeRef = useRef<number>(0);
 
   useEffect(() => {
     isSpeakingRef.current = isSpeaking;
@@ -106,43 +107,67 @@ export default function AIAssistantPage() {
     recognition.lang = 'en-US';
 
     recognition.onresult = (event: any) => {
+      // If AI is currently speaking or thinking, ignore all microphone results to prevent echo loop
+      if (isSpeakingRef.current || loadingRef.current || mutedMicStateRef.current) {
+        try {
+          recognition.stop();
+        } catch (e) {}
+        return;
+      }
+
       const latestResult = event.results[event.results.length - 1];
       const transcript = Array.from(event.results)
         .map((result: any) => result[0])
         .map((result: any) => result.transcript)
         .join('');
       
-      setInput(transcript);
+      const trimmed = transcript.trim();
+      if (!trimmed) return;
+
+      setInput(trimmed);
 
       if (latestResult.isFinal) {
         setIsListening(false);
-        if (transcript.trim() && transcript !== lastVoiceSendRef.current) {
-          lastVoiceSendRef.current = transcript;
-          setTimeout(() => {
-            latestHandleSendRef.current?.(transcript);
-            setInput('');
-          }, 500);
+        const normalizedCurrent = trimmed.toLowerCase();
+        const normalizedLast = String(lastVoiceSendRef.current || "").trim().toLowerCase();
+        const timeSinceLastSend = Date.now() - lastVoiceSendTimeRef.current;
+
+        // Skip exact duplicate voice triggers within 3 seconds to stay robust against mobile multiple triggers
+        if (normalizedCurrent === normalizedLast && timeSinceLastSend < 3000) {
+          console.log("Call Mode: Ignored duplicate transcript loop:", trimmed);
+          setInput('');
+          return;
         }
+
+        lastVoiceSendRef.current = trimmed;
+        lastVoiceSendTimeRef.current = Date.now();
+
+        setTimeout(() => {
+          latestHandleSendRef.current?.(trimmed);
+          setInput('');
+        }, 300);
       }
     };
 
     recognition.onerror = (event: any) => {
-      console.error('Speech recognition error:', event.error);
+      console.warn('Speech recognition status/error:', event.error);
       setIsListening(false);
     };
 
     recognition.onend = () => {
       setIsListening(false);
       
-      // Continuous Call Mode listening restoration
-      if (callModeEnabledRef.current && !isSpeakingRef.current && !loadingRef.current && !mutedMicStateRef.current) {
-        try {
-          recognition.start();
-          setIsListening(true);
-        } catch (e) {
-          // Ignore if already active
+      // Continuous Call Mode listening restoration (with a small 300ms timeout for mobile OS stability)
+      setTimeout(() => {
+        if (callModeEnabledRef.current && !isSpeakingRef.current && !loadingRef.current && !mutedMicStateRef.current) {
+          try {
+            recognition.start();
+            setIsListening(true);
+          } catch (e) {
+            // Ignore if already active
+          }
         }
-      }
+      }, 300);
     };
 
     recognitionRef.current = recognition;
@@ -156,21 +181,27 @@ export default function AIAssistantPage() {
     
     if (shouldListen) {
       if (!isListening) {
-        try {
-          lastVoiceSendRef.current = '';
-          recognitionRef.current.start();
-          setIsListening(true);
-          console.log("Call Mode: Mic activated, listening for Boss...");
-        } catch (err) {
-          // Already running
-        }
+        // Small delay to ensure any speaking TTS audio has fully stopped releasing the hardware channel on mobile
+        const timer = setTimeout(() => {
+          if (callModeEnabledRef.current && !isSpeakingRef.current && !loadingRef.current && !mutedMicStateRef.current) {
+            try {
+              lastVoiceSendRef.current = '';
+              recognitionRef.current.start();
+              setIsListening(true);
+              console.log("Call Mode: Mic activated dynamically, listening...");
+            } catch (err) {
+              // Already running
+            }
+          }
+        }, 400);
+        return () => clearTimeout(timer);
       }
     } else {
       if (isListening) {
         try {
           recognitionRef.current.stop();
           setIsListening(false);
-          console.log("Call Mode: Mic paused.");
+          console.log("Call Mode: Mic paused defensively.");
         } catch (err) {
           // Already stopped
         }

@@ -823,7 +823,7 @@ CREATE TABLE IF NOT EXISTS public.ai_pending_actions (
   entity_type TEXT NOT NULL, -- project, task, expense, contact, email, calendar_event, project_note etc.
   payload JSONB NOT NULL,
   summary TEXT NOT NULL,
-  status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'skipped')),
+  status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'skipped', 'executed', 'failed', 'expired')),
   result JSONB,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
   resolved_at TIMESTAMP WITH TIME ZONE
@@ -840,9 +840,256 @@ TO authenticated
 USING (auth.uid() = user_id)
 WITH CHECK (auth.uid() = user_id);
 
--- Indexes for memories and actions
+-- AI Agent Runs (Logging LLM conversation round-trips)
+CREATE TABLE IF NOT EXISTS public.ai_agent_runs (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  agent_id UUID REFERENCES public.ai_agents(id) ON DELETE CASCADE,
+  provider TEXT,
+  model TEXT,
+  prompt TEXT,
+  response TEXT,
+  status TEXT DEFAULT 'completed' CHECK (status IN ('completed', 'failed', 'blocked')),
+  error TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS on ai_agent_runs
+ALTER TABLE public.ai_agent_runs ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can manage their own agent runs" ON public.ai_agent_runs;
+CREATE POLICY "Users can manage their own agent runs"
+ON public.ai_agent_runs
+FOR ALL
+TO authenticated
+USING (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+-- AI Agent Tool Calls (Logging Tool Executions)
+CREATE TABLE IF NOT EXISTS public.ai_agent_tool_calls (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  agent_id UUID REFERENCES public.ai_agents(id) ON DELETE CASCADE,
+  run_id UUID REFERENCES public.ai_agent_runs(id) ON DELETE CASCADE,
+  pending_action_id UUID REFERENCES public.ai_pending_actions(id) ON DELETE SET NULL,
+  tool_name TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'success', 'failed', 'blocked')),
+  result JSONB,
+  error TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  resolved_at TIMESTAMP WITH TIME ZONE
+);
+
+-- Enable RLS on ai_agent_tool_calls
+ALTER TABLE public.ai_agent_tool_calls ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can manage their own agent tool calls" ON public.ai_agent_tool_calls;
+CREATE POLICY "Users can manage their own agent tool calls"
+ON public.ai_agent_tool_calls
+FOR ALL
+TO authenticated
+USING (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+-- Indexes for memories, actions, runs and tools
 CREATE INDEX IF NOT EXISTS idx_ai_agent_memories_user ON public.ai_agent_memories(user_id);
 CREATE INDEX IF NOT EXISTS idx_ai_pending_actions_user ON public.ai_pending_actions(user_id);
 CREATE INDEX IF NOT EXISTS idx_ai_pending_actions_status ON public.ai_pending_actions(status);
+CREATE INDEX IF NOT EXISTS idx_ai_agent_runs_user ON public.ai_agent_runs(user_id);
+CREATE INDEX IF NOT EXISTS idx_ai_agent_tool_calls_user ON public.ai_agent_tool_calls(user_id);
+
+
+-- ==========================================
+-- 9. HYBRID CONTEXT ARCHITECTURE
+-- ==========================================
+
+-- AI Conversations
+CREATE TABLE IF NOT EXISTS public.ai_conversations (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  agent_id UUID REFERENCES public.ai_agents(id) ON DELETE CASCADE,
+  title TEXT,
+  rolling_summary TEXT,
+  status TEXT DEFAULT 'active',
+  summary_updated_at TIMESTAMP WITH TIME ZONE,
+  last_message_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS on ai_conversations
+ALTER TABLE public.ai_conversations ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can manage their own conversations" ON public.ai_conversations;
+CREATE POLICY "Users can manage their own conversations"
+ON public.ai_conversations
+FOR ALL
+TO authenticated
+USING (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+-- AI Messages
+CREATE TABLE IF NOT EXISTS public.ai_messages (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  conversation_id UUID REFERENCES public.ai_conversations(id) ON DELETE CASCADE NOT NULL,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+  content TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS on ai_messages
+ALTER TABLE public.ai_messages ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can manage their own messages" ON public.ai_messages;
+CREATE POLICY "Users can manage their own messages"
+ON public.ai_messages
+FOR ALL
+TO authenticated
+USING (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+-- AI User Profiles
+CREATE TABLE IF NOT EXISTS public.ai_user_profiles (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL UNIQUE,
+  profile_summary TEXT,
+  preferences_summary TEXT,
+  personal_context_summary TEXT,
+  business_context_summary TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS on ai_user_profiles
+ALTER TABLE public.ai_user_profiles ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can manage their own profiles" ON public.ai_user_profiles;
+CREATE POLICY "Users can manage their own profiles"
+ON public.ai_user_profiles
+FOR ALL
+TO authenticated
+USING (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+-- AI Context Packages
+CREATE TABLE IF NOT EXISTS public.ai_context_packages (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  agent_id UUID REFERENCES public.ai_agents(id) ON DELETE CASCADE,
+  conversation_id UUID REFERENCES public.ai_conversations(id) ON DELETE CASCADE,
+  selected_memory_ids JSONB DEFAULT '[]'::jsonb,
+  database_context_keys JSONB DEFAULT '[]'::jsonb,
+  estimated_input_chars INTEGER DEFAULT 0,
+  package JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS on ai_context_packages
+ALTER TABLE public.ai_context_packages ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can manage their own context packages" ON public.ai_context_packages;
+CREATE POLICY "Users can manage their own context packages"
+ON public.ai_context_packages
+FOR ALL
+TO authenticated
+USING (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+-- Extra indexes
+CREATE INDEX IF NOT EXISTS idx_ai_conversations_user ON public.ai_conversations(user_id);
+CREATE INDEX IF NOT EXISTS idx_ai_conversations_agent ON public.ai_conversations(agent_id);
+CREATE INDEX IF NOT EXISTS idx_ai_messages_conversation ON public.ai_messages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_ai_messages_user ON public.ai_messages(user_id);
+CREATE INDEX IF NOT EXISTS idx_ai_user_profiles_user ON public.ai_user_profiles(user_id);
+CREATE INDEX IF NOT EXISTS idx_ai_context_packages_user ON public.ai_context_packages(user_id);
+CREATE INDEX IF NOT EXISTS idx_ai_context_packages_conversation ON public.ai_context_packages(conversation_id);
+
+-- AI Automations
+CREATE TABLE IF NOT EXISTS public.ai_automations (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  agent_id UUID REFERENCES public.ai_agents(id) ON DELETE CASCADE NOT NULL,
+  name TEXT NOT NULL,
+  automation_type TEXT NOT NULL, -- e.g., 'daily_briefing', 'end_day_review', 'email_triage', 'task_review', 'project_review', 'finance_review', 'calendar_review', 'custom'
+  description TEXT,
+  enabled BOOLEAN DEFAULT true NOT NULL,
+  schedule_type TEXT NOT NULL, -- 'hourly', 'daily', 'weekly', 'monthly', 'manual'
+  schedule_config JSONB DEFAULT '{}'::jsonb NOT NULL,
+  last_run_at TIMESTAMP WITH TIME ZONE,
+  next_run_at TIMESTAMP WITH TIME ZONE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS on ai_automations
+ALTER TABLE public.ai_automations ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can manage their own automations" ON public.ai_automations;
+CREATE POLICY "Users can manage their own automations"
+ON public.ai_automations
+FOR ALL
+TO authenticated
+USING (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+-- AI Automation Runs
+CREATE TABLE IF NOT EXISTS public.ai_automation_runs (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  automation_id UUID REFERENCES public.ai_automations(id) ON DELETE CASCADE NOT NULL,
+  agent_id UUID REFERENCES public.ai_agents(id) ON DELETE CASCADE,
+  status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'skipped')),
+  input_context JSONB DEFAULT '{}'::jsonb,
+  output_summary TEXT,
+  created_pending_action_ids UUID[],
+  error TEXT,
+  started_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  finished_at TIMESTAMP WITH TIME ZONE
+);
+
+-- Enable RLS on ai_automation_runs
+ALTER TABLE public.ai_automation_runs ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can manage their own automation runs" ON public.ai_automation_runs;
+CREATE POLICY "Users can manage their own automation runs"
+ON public.ai_automation_runs
+FOR ALL
+TO authenticated
+USING (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+-- AI Notifications
+CREATE TABLE IF NOT EXISTS public.ai_notifications (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  agent_id UUID REFERENCES public.ai_agents(id) ON DELETE CASCADE,
+  automation_id UUID REFERENCES public.ai_automations(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  notification_type TEXT DEFAULT 'info' CHECK (notification_type IN ('info', 'warning', 'urgent', 'success')),
+  is_read BOOLEAN DEFAULT false NOT NULL,
+  read_at TIMESTAMP WITH TIME ZONE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS on ai_notifications
+ALTER TABLE public.ai_notifications ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can manage their own notifications" ON public.ai_notifications;
+CREATE POLICY "Users can manage their own notifications"
+ON public.ai_notifications
+FOR ALL
+TO authenticated
+USING (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+CREATE INDEX IF NOT EXISTS idx_ai_automations_user ON public.ai_automations(user_id);
+CREATE INDEX IF NOT EXISTS idx_ai_automation_runs_user ON public.ai_automation_runs(user_id);
+CREATE INDEX IF NOT EXISTS idx_ai_notifications_user ON public.ai_notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_ai_notifications_read ON public.ai_notifications(is_read);
+
+
 
 

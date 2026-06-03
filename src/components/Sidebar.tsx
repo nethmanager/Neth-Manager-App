@@ -81,6 +81,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void }) {
         <SidebarItem to="/phonebook" icon={Users} label="Phonebook" onClick={onClose} />
         <SidebarItem to="/finance" icon={Wallet} label="Finance" onClick={onClose} />
         <SidebarItem to="/assistant" icon={Bot} label="Assistant" onClick={onClose} />
+        <SidebarItem to="/automations" icon={Zap} label="AI Automations" onClick={onClose} />
         
         <div className="pt-8 text-[10px] font-bold text-white/20 uppercase tracking-widest px-4 mb-4">Settings</div>
         <SidebarItem to="/settings" icon={Settings} label="Settings" onClick={onClose} />

@@ -316,8 +316,18 @@ export function AIProvider({ children }: { children: React.ReactNode }) {
       }));
 
       setDbPendingActions(mapped);
-    } catch (err) {
-      console.error("Error syncing db pending actions:", err);
+    } catch (err: any) {
+      const errMsg = String(err?.message || err || "").toLowerCase();
+      if (
+        errMsg.includes("fetch") ||
+        errMsg.includes("network") ||
+        errMsg.includes("abort") ||
+        errMsg.includes("failed to fetch")
+      ) {
+        console.warn("Syncing db pending actions paused (network/server offline):", err?.message || err);
+      } else {
+        console.error("Error syncing db pending actions:", err);
+      }
     }
   }, [user]);
 
@@ -590,9 +600,9 @@ export function AIProvider({ children }: { children: React.ReactNode }) {
 
       const effectiveProvider = activeAgent?.model_provider || provider;
 
-      // Build recent conversation history of up to 10 messages (including current user turn) with a max total of 6000 characters
+      // Build recent conversation history of up to 12 messages (including current user turn) with a max total of 4000 characters
       let recentConversation = [
-        ...messages.slice(-9),
+        ...messages.slice(-11),
         { role: 'user' as const, content: userMessage }
       ];
 
@@ -600,7 +610,7 @@ export function AIProvider({ children }: { children: React.ReactNode }) {
       const filteredConversation: { role: 'user' | 'assistant'; content: string }[] = [];
       for (let i = recentConversation.length - 1; i >= 0; i--) {
         const msg = recentConversation[i];
-        if (totalChars + msg.content.length > 6000) {
+        if (totalChars + msg.content.length > 4000) {
           break;
         }
         totalChars += msg.content.length;
@@ -614,6 +624,9 @@ export function AIProvider({ children }: { children: React.ReactNode }) {
           throw new Error("You must be logged in to use the online assistant.");
         }
 
+        const activeId = activeAgent?.id || 'default_conversation';
+        const currentConvId = localStorage.getItem(`ai_conversation_id_${activeId}`);
+
         const response = await fetch("/api/assistant/chat", {
           method: "POST",
           headers: {
@@ -626,7 +639,9 @@ export function AIProvider({ children }: { children: React.ReactNode }) {
             mode: effectiveProvider,
             agent_id: activeAgent ? activeAgent.id : undefined,
             call_mode_enabled: callModeEnabled || (activeAgent ? activeAgent.call_mode_default : false),
-            conversation_history: recentConversation
+            conversation_history: recentConversation,
+            current_page: location.pathname,
+            conversation_id: currentConvId || undefined
           })
         });
 
@@ -637,6 +652,16 @@ export function AIProvider({ children }: { children: React.ReactNode }) {
 
         const data = await response.json();
         const reply = data.reply || "";
+
+        if (data.conversation_id) {
+          localStorage.setItem(`ai_conversation_id_${activeId}`, data.conversation_id);
+        }
+
+        if (data.action_created) {
+          refreshPendingActions().catch(err => {
+            console.warn("Could not immediately refresh pending actions:", err);
+          });
+        }
 
         // RESPONSE DLP CHECK
         const validation = validateAIResponse(reply, sensitiveValues);
@@ -747,7 +772,40 @@ INSTRUCTION: Use the DATABASE_CONTEXT to answer specifically about the user's da
   const clearMessages = () => {
     setMessages([]);
     stopSpeaking();
+    const activeId = activeAgent?.id || 'default_conversation';
+    localStorage.removeItem(`ai_conversation_id_${activeId}`);
   };
+
+  // Load conversation messages from Supabase when activeAgent changes
+  useEffect(() => {
+    if (!user) return;
+    const activeId = activeAgent?.id || 'default_conversation';
+    const storedConvId = localStorage.getItem(`ai_conversation_id_${activeId}`);
+    
+    if (storedConvId) {
+      const fetchConvMessages = async () => {
+        try {
+          const { data, error } = await supabase
+            .from('ai_messages')
+            .select('role, content')
+            .eq('conversation_id', storedConvId)
+            .order('created_at', { ascending: true });
+          
+          if (!error && data) {
+            setMessages(data.map((m: any) => ({
+              role: m.role as 'user' | 'assistant',
+              content: m.content
+            })));
+          }
+        } catch (err) {
+          console.error("Failed to load messages for conversation from Supabase:", err);
+        }
+      };
+      fetchConvMessages();
+    } else {
+      setMessages([]);
+    }
+  }, [activeAgent?.id, user]);
 
   return (
     <AIContext.Provider value={{

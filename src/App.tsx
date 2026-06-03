@@ -11,6 +11,7 @@ import DailyPlanner from './pages/DailyPlanner';
 import Schedule from './pages/Schedule';
 import Finance from './pages/Finance';
 import AIAssistant from './pages/AIAssistant';
+import Automations from './pages/Automations';
 import Settings from './pages/Settings';
 import ProjectPage from './pages/ProjectPage';
 import Phonebook from './pages/Phonebook';
@@ -33,6 +34,7 @@ function App() {
         <Route path="planner" element={<DailyPlanner />} />
         <Route path="schedule" element={<Schedule />} />
         <Route path="assistant" element={<AIAssistant />} />
+        <Route path="automations" element={<Automations />} />
         <Route path="settings" element={<Settings />} />
       </Route>
     </Routes>
