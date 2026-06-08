@@ -19,3 +19,5 @@ verify_jwt = false
 [functions.google-calendar-sync]
 verify_jwt = true
 
+[functions.google-calendar-create-event]
+verify_jwt = true

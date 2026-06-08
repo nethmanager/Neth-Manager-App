@@ -226,7 +226,7 @@ CREATE TABLE IF NOT EXISTS public.ai_settings (
   user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   enabled BOOLEAN DEFAULT true,
   ollama_endpoint TEXT DEFAULT 'http://localhost:11434/api/generate',
-  model_name TEXT DEFAULT 'llama3:latest',
+  model_name TEXT DEFAULT 'gemma4:12b',
   temperature FLOAT DEFAULT 0.7,
   max_tokens INTEGER DEFAULT 2048,
   allow_sensitive_context BOOLEAN DEFAULT false,

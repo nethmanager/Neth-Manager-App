@@ -9,6 +9,14 @@ export default function Auth() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [mode, setMode] = useState<'login' | 'signup'>('login');
+  const [showTimeoutNotice, setShowTimeoutNotice] = useState(false);
+
+  useEffect(() => {
+    if (sessionStorage.getItem('neth_session_timeout_notice') === 'true') {
+      setShowTimeoutNotice(true);
+      sessionStorage.removeItem('neth_session_timeout_notice');
+    }
+  }, []);
 
   if (!isSupabaseConfigured) {
     return (
@@ -89,6 +97,13 @@ export default function Auth() {
               : 'Create your account to start managing your work.'}
           </p>
         </div>
+
+        {showTimeoutNotice && (
+          <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-500 text-xs font-bold uppercase flex items-center gap-3">
+            <AlertCircle size={16} />
+            Session expired. Please sign in again.
+          </div>
+        )}
 
         {error && (
           <div className="p-4 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-500 text-xs font-bold uppercase flex items-center gap-3">

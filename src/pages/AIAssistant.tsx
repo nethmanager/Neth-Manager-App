@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Bot, Send, Zap, AlertCircle, RefreshCw, Terminal, ArrowLeft, Mic, MicOff, Volume2, VolumeX, Phone, Hand, Loader2 } from 'lucide-react';
+import { Bot, Send, Zap, AlertCircle, RefreshCw, Terminal, ArrowLeft, Mic, MicOff, Volume2, VolumeX, Phone, Hand, Loader2, MessageSquarePlus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '../lib/utils';
 import { useOllamaAssistant } from '../hooks/useOllamaAssistant';
@@ -46,6 +46,7 @@ export default function AIAssistantPage() {
     lastSynced,
     refreshContext,
     sendMessage,
+    clearMessages,
     provider,
     setProvider,
     voiceEnabled,
@@ -61,6 +62,23 @@ export default function AIAssistantPage() {
     pendingActions,
     resolvePendingAction
   } = useOllamaAssistant();
+
+  const hasAutoStartedCallRef = useRef(false);
+
+  useEffect(() => {
+    if (hasAutoStartedCallRef.current) return;
+    const searchParams = new URLSearchParams(window.location.search);
+    if (searchParams.get('call') === '1') {
+      hasAutoStartedCallRef.current = true;
+      const agentId = searchParams.get('agent');
+      if (agentId) {
+        setActiveAgentId(agentId);
+      }
+      setVoiceEnabled(true);
+      setCallModeEnabled(true);
+      navigate('/assistant', { replace: true });
+    }
+  }, [setActiveAgentId, setVoiceEnabled, setCallModeEnabled, navigate]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -274,6 +292,7 @@ export default function AIAssistantPage() {
       recognitionRef.current?.stop();
     } catch (e) {}
     setIsListening(false);
+    navigate('/assistant', { replace: true });
   };
 
   const handleToggleSpeaker = () => {
@@ -313,18 +332,42 @@ export default function AIAssistantPage() {
             </div>
           </div>
 
-          <button 
-            onClick={() => {
-              setCallModeEnabled(false);
-              stopSpeaking();
-              try { recognitionRef.current?.stop(); } catch(e) {}
-              setIsListening(false);
-            }}
-            className="px-4 py-2 rounded-xl bg-white/5 border border-white/15 text-white/50 hover:text-white hover:bg-white/10 transition-all text-[10px] font-black uppercase tracking-widest"
-          >
-            Switch to Text
-          </button>
+        <div className="flex items-center gap-2">
+  <button
+    onClick={() => {
+      stopSpeaking();
+      setCallModeEnabled(false);
+      try { recognitionRef.current?.stop(); } catch (e) {}
+      setIsListening(false);
+      clearMessages();
+      navigate('/assistant', { replace: true });
+      showToast.success("Started a fresh chat.");
+    }}
+    className="px-4 py-2 rounded-xl bg-blue-600 border border-blue-500 text-white hover:bg-blue-500 transition-all text-[10px] font-black uppercase tracking-widest"
+  >
+    New Chat
+  </button>
+
+  <button 
+    onClick={() => {
+      setCallModeEnabled(false);
+      stopSpeaking();
+      try { recognitionRef.current?.stop(); } catch(e) {}
+      setIsListening(false);
+      navigate('/assistant', { replace: true });
+    }}
+    className="px-4 py-2 rounded-xl bg-white/5 border border-white/15 text-white/50 hover:text-white hover:bg-white/10 transition-all text-[10px] font-black uppercase tracking-widest"
+  >
+    Switch to Text
+  </button>
+</div>
         </div>
+
+
+
+
+
+
 
         {/* Center Orbital SONAR Dashboard */}
         <div className="flex-1 flex flex-col items-center justify-center space-y-8 my-6">
@@ -458,10 +501,10 @@ export default function AIAssistantPage() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto flex-1 flex flex-col min-h-[600px] bg-slate-950/50 border border-white/10 rounded-[3rem] overflow-hidden shadow-2xl backdrop-blur-sm">
+    <div className="max-w-6xl mx-auto flex-1 flex flex-col min-h-[600px] bg-slate-950/50 border border-white/10 rounded-[2rem] overflow-hidden shadow-2xl backdrop-blur-sm">
       {/* Header */}
-      <div className="p-4 md:p-6 flex items-center justify-between border-b border-white/5 bg-white/[0.02]">
-        <div className="flex items-center gap-6">
+      <div className="p-4 md:p-5 flex flex-col xl:flex-row xl:items-center justify-between gap-4 border-b border-white/5 bg-white/[0.02]">
+        <div className="flex items-center gap-4 min-w-0 w-full xl:w-auto">
           <button 
             onClick={() => navigate(-1)}
             className="p-3 rounded-2xl bg-white/5 border border-white/5 text-white/40 hover:text-white transition-all"
@@ -484,7 +527,7 @@ export default function AIAssistantPage() {
                       showToast.success(`Switched active agent to ${selected.name}`);
                     }
                   }}
-                  className="bg-transparent border-none text-xl font-black uppercase tracking-[0.2em] text-white focus:outline-none focus:ring-0 p-0 pr-8 cursor-pointer hover:text-blue-400 transition-colors"
+                  className="bg-transparent border-none max-w-[320px] truncate text-base md:text-lg font-black uppercase tracking-[0.12em] text-white focus:outline-none focus:ring-0 p-0 pr-8 cursor-pointer hover:text-blue-400 transition-colors"
                   title="Switch AI Agent Persona"
                 >
                   {agents.map(a => (
@@ -508,9 +551,9 @@ export default function AIAssistantPage() {
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 flex-wrap justify-end w-full xl:w-auto">
           {activeAgent ? (
-            <div className="text-[10px] font-black uppercase tracking-[0.15em] bg-white/5 border border-white/10 rounded-2xl px-4 py-2 text-white/50 max-w-xs truncate">
+            <div className="hidden 2xl:block text-[9px] font-black uppercase tracking-widest bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white/50 max-w-[260px] truncate">
               Engine: <span className="text-amber-400 capitalize">{effectiveProvider}</span> / <span className="text-white">{activeAgent.model_name || 'default'}</span>
             </div>
           ) : (
@@ -553,6 +596,25 @@ export default function AIAssistantPage() {
               </button>
             </div>
           )}
+          <button 
+            onClick={() => {
+              stopSpeaking();
+              setCallModeEnabled(false);
+              try {
+                recognitionRef.current?.stop();
+              } catch (e) {}
+              setIsListening(false);
+              clearMessages();
+              navigate('/assistant', { replace: true });
+              showToast.success("Started a fresh chat.");
+            }}
+            className="px-3 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 border border-blue-500 text-white flex items-center gap-2 text-[9px] font-black uppercase tracking-widest transition-all shadow-md shrink-0 active:scale-95"
+            title="Start a fresh conversation with this agent"
+          >
+            <MessageSquarePlus size={14} />
+            <span className="hidden sm:inline">New Chat</span>
+          </button>
+
           <button 
             onClick={() => refreshContext()} 
             disabled={isCtxLoading}

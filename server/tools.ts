@@ -28,8 +28,46 @@ function getRequiredPermissionForAction(actionType: string): string {
       return "emails";
     case "create_calendar_event":
       return "schedule";
+    case "create_social_post":
+    case "create_content_asset":
+      return "integrations";
+    case "create_agent_task":
+      return "agents";
+    case "request_approval":
+      return "approvals";
     default:
       return "unspecified";
+  }
+}
+
+function getEntityTypeForAction(actionType: string): string | null {
+  switch (actionType) {
+    case "create_project":
+    case "update_project_status":
+    case "add_project_note":
+      return "project";
+    case "create_task":
+      return "task";
+    case "create_expense":
+      return "expense";
+    case "create_contact":
+      return "phonebook_contact";
+    case "link_email_to_project":
+      return "email_project_link";
+    case "create_calendar_event":
+      return "calendar_event";
+    case "move_email_to_folder":
+      return "email";
+    case "create_social_post":
+      return "social_post";
+    case "create_content_asset":
+      return "content_asset";
+    case "create_agent_task":
+      return "agent_task";
+    case "request_approval":
+      return "approval_request";
+    default:
+      return null;
   }
 }
 
@@ -65,12 +103,14 @@ export async function executeBackendTool(
   // Log tool call start defensively inside ai_agent_tool_calls
   let toolCallId: string | null = null;
   try {
+    const initialEntityType = getEntityTypeForAction(actionType);
     const { data: tc } = await db.from("ai_agent_tool_calls").insert({
       user_id: userId,
       agent_id: agentId && agentId !== "default" ? agentId : null,
       run_id: runId || null,
       pending_action_id: pendingActionId || null,
       tool_name: actionType,
+      entity_type: initialEntityType,
       payload: payload || {},
       status: "pending"
     }).select("id").single();
@@ -84,7 +124,7 @@ export async function executeBackendTool(
     let permissions: string[] = ["*"];
     let agentName = "System Agent";
     
-    if (agentId && agentId !== "default") {
+      if (agentId && agentId !== "default") {
       const { data: agent, error: agentError } = await db
         .from("ai_agents")
         .select("*")
@@ -100,8 +140,7 @@ export async function executeBackendTool(
         if (toolCallId) {
           await db.from("ai_agent_tool_calls").update({
             status: "failed",
-            error: failMsg,
-            resolved_at: new Date().toISOString()
+            error_message: failMsg
           }).eq("id", toolCallId).catch(() => {});
         }
         return { success: false, message: failMsg };
@@ -121,8 +160,7 @@ export async function executeBackendTool(
       if (toolCallId) {
         await db.from("ai_agent_tool_calls").update({
           status: "failed",
-          error: failMsg,
-          resolved_at: new Date().toISOString()
+          error_message: failMsg
         }).eq("id", toolCallId).catch(() => {});
       }
 
@@ -406,15 +444,18 @@ export async function executeBackendTool(
         }
 
         let calendarAccountId = payload.calendar_account_id;
+        let accountData: any = null;
+
         if (!calendarAccountId) {
-          const { data: firstAccount } = await db
+          const { data: firstAccount, error: firstErr } = await db
             .from("calendar_accounts")
-            .select("id")
+            .select("id, provider")
             .eq("user_id", userId)
             .limit(1)
             .maybeSingle();
           if (firstAccount) {
             calendarAccountId = firstAccount.id;
+            accountData = firstAccount;
           } else {
             return {
               success: false,
@@ -422,37 +463,71 @@ export async function executeBackendTool(
             };
           }
         } else {
-          // Verify ownership of the referenced calendar account
-          const { data: acc } = await db
+          // Verify ownership & get provider
+          const { data: acc, error: accErr } = await db
             .from("calendar_accounts")
-            .select("id")
+            .select("id, provider")
             .eq("id", calendarAccountId)
             .eq("user_id", userId)
             .maybeSingle();
-          if (!acc) return { success: false, message: "Invalid calendar_account_id. Account ownership verification failed." };
+          if (accErr || !acc) {
+            return { success: false, message: "Invalid calendar_account_id. Account ownership verification failed." };
+          }
+          accountData = acc;
         }
 
-        const { data, error } = await db
-          .from("calendar_events")
-          .insert({
-            user_id: userId,
-            calendar_account_id: calendarAccountId,
-            provider: payload.provider || "google",
-            provider_calendar_id: payload.provider_calendar_id || "primary",
-            provider_event_id: payload.provider_event_id || Math.random().toString(36).substring(2, 12),
-            title: payload.title,
-            description: payload.description || null,
-            location: payload.location || null,
-            start_at: payload.start_at,
-            end_at: payload.end_at,
-            all_day: payload.all_day || false,
-            status: payload.status || "confirmed"
-          })
-          .select("*")
-          .single();
+        const isGoogle = String(accountData.provider).toLowerCase() === "google";
+        if (isGoogle) {
+          try {
+            const { data: fnData, error: fnErr } = await db.functions.invoke("google-calendar-create-event", {
+              body: {
+                calendar_account_id: calendarAccountId,
+                title: payload.title,
+                description: payload.description || null,
+                location: payload.location || null,
+                start_at: payload.start_at,
+                end_at: payload.end_at,
+                all_day: payload.all_day || false
+              }
+            });
 
-        if (error) throw error;
-        resultData = data;
+            if (fnErr) {
+              return { success: false, message: `Google Calendar creation failed: ${fnErr.message || JSON.stringify(fnErr)}` };
+            }
+            if (fnData?.error) {
+              return { success: false, message: `Google Calendar creation failed: ${fnData.error}` };
+            }
+            if (!fnData || !fnData.event) {
+              return { success: false, message: "Google Calendar creation succeeded but no local database event row was returned from service." };
+            }
+            resultData = fnData.event;
+          } catch (invokeErr: any) {
+            return { success: false, message: `Google Calendar service call failed: ${invokeErr.message || String(invokeErr)}` };
+          }
+        } else {
+          // Non-Google provider, insert local only and mark provider as custom
+          const { data, error } = await db
+            .from("calendar_events")
+            .insert({
+              user_id: userId,
+              calendar_account_id: calendarAccountId,
+              provider: payload.provider || "custom",
+              provider_calendar_id: payload.provider_calendar_id || "primary",
+              provider_event_id: payload.provider_event_id || Math.random().toString(36).substring(2, 12),
+              title: payload.title,
+              description: payload.description || null,
+              location: payload.location || null,
+              start_at: payload.start_at,
+              end_at: payload.end_at,
+              all_day: payload.all_day || false,
+              status: payload.status || "confirmed"
+            })
+            .select("*")
+            .single();
+
+          if (error) throw error;
+          resultData = data;
+        }
         break;
       }
 
@@ -462,17 +537,19 @@ export async function executeBackendTool(
           return { success: false, message: "email_id and folder_id are required in payload." };
         }
 
-        // Validate emails ownership
-        const { data: email } = await db
+        // 1 & 2. Fetch the email with its account provider and validate ownership
+        const { data: emailData, error: emailErr } = await db
           .from("emails")
-          .select("id")
+          .select("id, account_id, account:email_accounts(provider)")
           .eq("id", payload.email_id)
           .eq("user_id", userId)
           .maybeSingle();
 
-        if (!email) return { success: false, message: "Invalid or unauthorized email_id." };
+        if (emailErr || !emailData) {
+          return { success: false, message: "Invalid or unauthorized email_id." };
+        }
 
-        // Validate folder ownership
+        // 3. Validate folder ownership
         const { data: folder } = await db
           .from("email_folders")
           .select("id")
@@ -482,6 +559,30 @@ export async function executeBackendTool(
 
         if (!folder) return { success: false, message: "Invalid or unauthorized folder_id." };
 
+        // Resolve provider safely
+        const accountObj = emailData.account;
+        const providerName = Array.isArray(accountObj) ? accountObj[0]?.provider : accountObj?.provider;
+        const isGmail = String(providerName).toLowerCase() === "gmail";
+
+        // 4. If Gmail, call Supabase Edge Function `gmail-route-email`
+        if (isGmail) {
+          try {
+            const { data: fnData, error: fnErr } = await db.functions.invoke("gmail-route-email", {
+              body: { email_id: payload.email_id, folder_id: payload.folder_id }
+            });
+
+            if (fnErr) {
+              return { success: false, message: `Gmail routing failed: ${fnErr.message || JSON.stringify(fnErr)}` };
+            }
+            if (fnData?.error) {
+              return { success: false, message: `Gmail routing failed: ${fnData.error}` };
+            }
+          } catch (invokeErr: any) {
+            return { success: false, message: `Gmail routing service call failed: ${invokeErr.message || String(invokeErr)}` };
+          }
+        }
+
+        // 5. After Gmail route succeeds, or if non-Gmail, update local emails.folder_id
         const { data, error } = await db
           .from("emails")
           .update({ folder_id: payload.folder_id })
@@ -554,6 +655,129 @@ export async function executeBackendTool(
         break;
       }
 
+      case "create_social_post": {
+        entityType = "social_post";
+        if (!payload.provider) {
+          return { success: false, message: "provider is a required field." };
+        }
+        const { data, error } = await db
+          .from("social_posts")
+          .insert({
+            user_id: userId,
+            social_profile_id: payload.social_profile_id || null,
+            project_id: payload.project_id || null,
+            created_by_agent_id: payload.created_by_agent_id || agentId || null,
+            provider: payload.provider,
+            external_post_id: payload.external_post_id || null,
+            post_type: payload.post_type || "post",
+            title: payload.title || null,
+            caption: payload.caption || null,
+            media_asset_ids: payload.media_asset_ids || null,
+            status: payload.status || "draft",
+            scheduled_at: payload.scheduled_at || null,
+            published_at: payload.published_at || null,
+            metrics: payload.metrics || {},
+            raw_payload: payload.raw_payload || {},
+            error: payload.error || null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .select("*")
+          .single();
+
+        if (error) throw error;
+        resultData = data;
+        break;
+      }
+
+      case "create_content_asset": {
+        entityType = "content_asset";
+        if (!payload.title || !payload.asset_type || !payload.file_path) {
+          return { success: false, message: "title, asset_type, and file_path are required fields." };
+        }
+        const { data, error } = await db
+          .from("content_assets")
+          .insert({
+            user_id: userId,
+            project_id: payload.project_id || null,
+            created_by_agent_id: payload.created_by_agent_id || agentId || null,
+            asset_type: payload.asset_type,
+            title: payload.title,
+            description: payload.description || null,
+            file_path: payload.file_path,
+            file_url: payload.file_url || null,
+            prompt: payload.prompt || null,
+            status: payload.status || "draft",
+            metadata: payload.metadata || {},
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .select("*")
+          .single();
+
+        if (error) throw error;
+        resultData = data;
+        break;
+      }
+
+      case "create_agent_task": {
+        entityType = "agent_task";
+        if (!payload.title || !payload.task_type) {
+          return { success: false, message: "title and task_type are required fields." };
+        }
+        const { data, error } = await db
+          .from("agent_tasks")
+          .insert({
+            user_id: userId,
+            requesting_agent_id: payload.requesting_agent_id || agentId || null,
+            assigned_agent_id: payload.assigned_agent_id || null,
+            task_type: payload.task_type,
+            title: payload.title,
+            input_json: payload.input_json || payload.payload_data || payload.payload || {},
+            result_json: payload.result_json || payload.result_data || payload.result || {},
+            status: payload.status || "pending",
+            priority: payload.priority || "medium",
+            due_at: payload.due_at || null,
+            error: payload.error || null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .select("*")
+          .single();
+
+        if (error) throw error;
+        resultData = data;
+        break;
+      }
+
+      case "request_approval": {
+        entityType = "approval_request";
+        if (!payload.entity_type || !payload.action_type || !payload.summary) {
+          return { success: false, message: "entity_type, action_type, and summary are required fields." };
+        }
+        const { data, error } = await db
+          .from("approval_requests")
+          .insert({
+            user_id: userId,
+            requested_by_agent_id: payload.requested_by_agent_id || agentId || null,
+            entity_type: payload.entity_type,
+            entity_id: payload.entity_id || null,
+            action_type: payload.action_type,
+            summary: payload.summary,
+            risk_level: payload.risk_level || "medium",
+            status: "pending",
+            payload: payload.payload || payload.details || {},
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .select("*")
+          .single();
+
+        if (error) throw error;
+        resultData = data;
+        break;
+      }
+
       default: {
         return { success: false, message: `Unknown action type '${actionType}'` };
       }
@@ -566,8 +790,7 @@ export async function executeBackendTool(
     if (toolCallId) {
       await db.from("ai_agent_tool_calls").update({
         status: "success",
-        result: resultData || { success: true },
-        resolved_at: new Date().toISOString()
+        result: resultData || { success: true }
       }).eq("id", toolCallId).catch(() => {});
     }
 
@@ -585,8 +808,7 @@ export async function executeBackendTool(
     if (toolCallId) {
       await db.from("ai_agent_tool_calls").update({
         status: "failed",
-        error: err.message || String(err),
-        resolved_at: new Date().toISOString()
+        error_message: err.message || String(err)
       }).eq("id", toolCallId).catch(() => {});
     }
 

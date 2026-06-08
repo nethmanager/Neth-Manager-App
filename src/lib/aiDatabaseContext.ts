@@ -57,7 +57,12 @@ export async function buildAIDatabaseContext(userId: string, isDetailed: boolean
     email_project_links,
     expense_project_links,
     calendar_accounts,
-    calendar_events
+    calendar_events,
+    integration_accounts,
+    social_profiles,
+    social_posts,
+    approval_requests,
+    agent_tasks
   ] = await Promise.all([
     fetchData('profiles', supabase.from('profiles').select('*').eq('id', userId).maybeSingle()),
     fetchData('businesses', supabase.from('businesses').select('*').eq('user_id', userId).limit(50)),
@@ -76,7 +81,12 @@ export async function buildAIDatabaseContext(userId: string, isDetailed: boolean
     fetchData('email_project_links', supabase.from('email_project_links').select('email_id, project:projects(name)').eq('user_id', userId)),
     fetchData('expense_project_links', supabase.from('expense_project_links').select('expense_id, project:projects(name)').eq('user_id', userId)),
     fetchData('calendar_accounts', supabase.from('calendar_accounts').select('*').eq('user_id', userId).limit(50)),
-    fetchData('calendar_events', supabase.from('calendar_events').select('*, account:calendar_accounts(email_address, display_name)').eq('user_id', userId).limit(100))
+    fetchData('calendar_events', supabase.from('calendar_events').select('*, account:calendar_accounts(email_address, display_name)').eq('user_id', userId).limit(100)),
+    fetchData('integration_accounts', supabase.from('integration_accounts').select('id, provider, status').eq('user_id', userId).limit(50)),
+    fetchData('social_profiles', supabase.from('social_profiles').select('id, provider, handle, display_name, follower_count').eq('user_id', userId).limit(50)),
+    fetchData('social_posts', supabase.from('social_posts').select('id, provider, title, status, scheduled_at').eq('user_id', userId).neq('status', 'published').limit(50)),
+    fetchData('approval_requests', supabase.from('approval_requests').select('id, entity_type, action_type, status').eq('user_id', userId).eq('status', 'pending').limit(50)),
+    fetchData('agent_tasks', supabase.from('agent_tasks').select('id, task_type, status').eq('user_id', userId).order('created_at', { ascending: false }).limit(20))
   ]);
 
   // Helper to add to sensitive values
@@ -97,6 +107,38 @@ export async function buildAIDatabaseContext(userId: string, isDetailed: boolean
   email_accounts?.forEach((a: any) => addSensitive(a.email_address));
   calendar_accounts?.forEach((a: any) => addSensitive(a.email_address));
 
+  const integrationsCountByProvider: Record<string, number> = {};
+  integration_accounts?.forEach((acc: any) => {
+    if (acc && acc.provider) {
+      integrationsCountByProvider[acc.provider] = (integrationsCountByProvider[acc.provider] || 0) + 1;
+    }
+  });
+
+  const compactProfiles = social_profiles?.map((p: any) => ({
+    handle: p.handle || p.display_name || '',
+    provider: p.provider,
+    followers: p.follower_count || 0
+  })) || [];
+
+  const draftPosts = social_posts?.map((p: any) => ({
+    provider: p.provider,
+    title: p.title || 'Untitled',
+    status: p.status,
+    scheduled_at: p.scheduled_at
+  })) || [];
+
+  const pendingApprovals = approval_requests?.map((a: any) => ({
+    id: a.id,
+    entity_type: a.entity_type,
+    action_type: a.action_type
+  })) || [];
+
+  const recentAgentTasks = agent_tasks?.map((t: any) => ({
+    id: t.id,
+    task_type: t.task_type,
+    status: t.status
+  })) || [];
+
   const rawContextData: any = {
     metadata: {
       generated_at: new Date(timestamp).toISOString(),
@@ -112,8 +154,20 @@ export async function buildAIDatabaseContext(userId: string, isDetailed: boolean
         contacts: phonebook_contacts?.length || 0,
         accounts: financial_accounts?.length || 0,
         calendar_accounts: calendar_accounts?.length || 0,
-        calendar_events: calendar_events?.length || 0
+        calendar_events: calendar_events?.length || 0,
+        integration_accounts: integration_accounts?.length || 0,
+        social_profiles: social_profiles?.length || 0,
+        social_posts: social_posts?.length || 0,
+        approval_requests: approval_requests?.length || 0,
+        agent_tasks: agent_tasks?.length || 0
       }
+    },
+    integrations_summary: {
+      provider_accounts_count: integrationsCountByProvider,
+      social_profiles: compactProfiles,
+      non_published_posts: draftPosts,
+      pending_approvals: pendingApprovals,
+      recent_agent_tasks: recentAgentTasks
     },
     ai_settings: ai_settings ? { 
       model: ai_settings.model_name, 

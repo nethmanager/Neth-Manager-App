@@ -217,7 +217,7 @@ export default function AIAssistantFooter() {
       </div>
 
       {/* Main Footer Bar */}
-      <div className="h-16 md:h-[88px] flex items-center px-4 md:px-6 gap-3 md:gap-6 relative max-w-7xl mx-auto">
+      <div className="h-16 md:h-[88px] flex items-center px-4 md:px-6 gap-3 md:gap-6 relative w-full max-w-[1536px] mx-auto">
         {/* Toggle History Button */}
         <div className="absolute -top-10 left-1/2 -translate-x-1/2 flex items-center">
           <button 

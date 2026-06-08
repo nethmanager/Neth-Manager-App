@@ -7,7 +7,9 @@
     "dev": "tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
-    "lint": "tsc"
+    "lint": "tsc && tsc -p tsconfig.server.json",
+    "lint:client": "tsc",
+    "lint:server": "tsc -p tsconfig.server.json"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.43.2",

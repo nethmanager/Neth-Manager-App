@@ -447,5 +447,129 @@ export interface AIAgent {
   updated_at?: string;
 }
 
+export interface IntegrationAccount {
+  id: string;
+  user_id: string;
+  provider: string;
+  provider_account_id?: string | null;
+  display_name: string | null;
+  handle?: string | null;
+  email?: string | null;
+  status: string;
+  scopes?: string[] | null;
+  connected_at?: string | null;
+  last_synced_at?: string | null;
+  metadata?: any | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface SocialProfile {
+  id: string;
+  user_id: string;
+  integration_account_id?: string | null;
+  platform_id?: string | null;
+  provider: string;
+  provider_profile_id?: string | null;
+  profile_type?: string | null;
+  display_name: string | null;
+  handle: string | null;
+  profile_url?: string | null;
+  avatar_url?: string | null;
+  follower_count?: number;
+  metrics?: any | null;
+  last_synced_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ContentAsset {
+  id: string;
+  user_id: string;
+  project_id?: string | null;
+  created_by_agent_id?: string | null;
+  asset_type: string;
+  title: string;
+  description?: string | null;
+  file_path: string;
+  file_url?: string | null;
+  prompt?: string | null;
+  status: string;
+  metadata?: any | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface SocialPost {
+  id: string;
+  user_id: string;
+  social_profile_id?: string | null;
+  project_id?: string | null;
+  created_by_agent_id?: string | null;
+  provider: string;
+  external_post_id?: string | null;
+  post_type: string;
+  title: string | null;
+  caption: string | null;
+  media_asset_ids?: string[] | null;
+  status: string;
+  scheduled_at?: string | null;
+  published_at?: string | null;
+  metrics?: any | null;
+  raw_payload?: any | null;
+  error?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PublishingJob {
+  id: string;
+  user_id: string;
+  social_post_id: string;
+  social_profile_id?: string | null;
+  provider: string;
+  status: string;
+  scheduled_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  result?: any | null;
+  error?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AgentTask {
+  id: string;
+  user_id: string;
+  requesting_agent_id?: string | null;
+  assigned_agent_id?: string | null;
+  task_type: string;
+  title: string;
+  input_json?: any | null;
+  result_json?: any | null;
+  status: string;
+  priority?: string | null;
+  due_at?: string | null;
+  error?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ApprovalRequest {
+  id: string;
+  user_id: string;
+  requested_by_agent_id?: string | null;
+  entity_type: string;
+  entity_id: string;
+  action_type: string;
+  summary?: string | null;
+  risk_level?: string | null;
+  status: 'pending' | 'approved' | 'rejected';
+  payload?: any | null;
+  resolved_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 
 

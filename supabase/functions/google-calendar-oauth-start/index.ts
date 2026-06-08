@@ -31,7 +31,7 @@ serve(async (req) => {
 
     const clientId = Deno.env.get('GOOGLE_CLIENT_ID')
     const redirectUri = Deno.env.get('GOOGLE_CALENDAR_REDIRECT_URI') || Deno.env.get('GOOGLE_REDIRECT_URI')
-    const scope = 'openid email profile https://www.googleapis.com/auth/calendar.readonly'
+    const scope = 'openid email profile https://www.googleapis.com/auth/calendar.events'
 
     const supabaseAdmin = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',

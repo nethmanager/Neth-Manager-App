@@ -31,13 +31,13 @@ function SidebarItem({ to, icon: Icon, label, onClick }: SidebarItemProps) {
       to={to}
       onClick={onClick}
       className={({ isActive }) => cn(
-        "flex items-center gap-3 px-4 py-3 rounded-2xl transition-all duration-300 group relative",
+        "flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all duration-300 group relative",
         isActive 
           ? "bg-white/10 text-white shadow-lg shadow-white/5" 
           : "text-white/40 hover:text-white/80 hover:bg-white/5"
       )}
     >
-      <Icon size={20} className="transition-transform group-hover:scale-110" />
+      <Icon size={18} className="transition-transform group-hover:scale-110" />
       <span className="text-xs font-bold uppercase tracking-widest">{label}</span>
       <div className={cn(
         "absolute right-4 w-1.5 h-1.5 rounded-full bg-blue-500 transition-all duration-300",
@@ -55,9 +55,9 @@ export default function Sidebar({ onClose }: { onClose?: () => void }) {
   };
 
   return (
-    <div className="w-full lg:w-72 h-full lg:h-screen flex flex-col bg-slate-950 border-r border-white/5 relative z-50">
-      <div className="p-8">
-        <div className="flex items-center gap-3 mb-2">
+    <div className="w-full lg:w-72 h-full min-h-0 flex flex-col bg-slate-950 border-r border-white/5 relative z-50">
+      <div className="p-6 lg:p-7 shrink-0">
+        <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
             <Zap className="text-white fill-white" size={24} />
           </div>
@@ -68,7 +68,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void }) {
         </div>
       </div>
 
-      <nav className="flex-1 px-4 py-4 overflow-y-auto space-y-1">
+      <nav className="flex-1 min-h-0 px-4 py-2 overflow-y-auto overscroll-contain space-y-1">
         <div className="text-[10px] font-bold text-white/20 uppercase tracking-widest px-4 mb-4">Workspace</div>
         <SidebarItem to="/" icon={LayoutDashboard} label="Dashboard" onClick={onClose} />
         <SidebarItem to="/planner" icon={Calendar} label="Daily Plan" onClick={onClose} />
@@ -87,8 +87,8 @@ export default function Sidebar({ onClose }: { onClose?: () => void }) {
         <SidebarItem to="/settings" icon={Settings} label="Settings" onClick={onClose} />
       </nav>
 
-      <div className="p-6 mt-auto">
-        <div className="bg-white/5 rounded-3xl p-4 border border-white/5 relative overflow-hidden group">
+      <div className="p-4 shrink-0 bg-slate-950">
+        <div className="bg-white/5 rounded-2xl p-3 border border-white/5 relative overflow-hidden group">
           <div className="absolute top-0 right-0 p-2 opacity-20 group-hover:opacity-40 transition-opacity">
             <Zap size={40} className="text-blue-500" />
           </div>
@@ -98,7 +98,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void }) {
           </div>
           <button 
             onClick={handleLogout}
-            className="w-full mt-4 flex items-center justify-center gap-2 py-2 rounded-xl bg-white/5 border border-white/10 text-[10px] font-bold text-white/60 hover:bg-white/10 hover:text-white transition-all uppercase tracking-widest"
+            className="w-full mt-3 flex items-center justify-center gap-2 py-2 rounded-xl bg-white/5 border border-white/10 text-[10px] font-bold text-white/60 hover:bg-white/10 hover:text-white transition-all uppercase tracking-widest"
           >
             <LogOut size={14} /> Sign Out
           </button>

@@ -31,12 +31,214 @@ function checkRateLimit(ip: string): boolean {
   return true;
 }
 
+function getAiModelCost(provider: string, model: string, inputTokens: number, outputTokens: number, cachedTokens: number = 0, charCount: number = 0): number {
+  const provClean = String(provider).toLowerCase();
+  const modelClean = String(model).toLowerCase();
+  
+  if (provClean === "ollama") return 0;
+  
+  let inputPrice = 0;
+  let outputPrice = 0;
+  let cachedPrice = 0;
+  let charPrice = 0;
+
+  if (provClean === "gemini") {
+    if (modelClean.includes("pro")) {
+      inputPrice = 0.00000125; 
+      outputPrice = 0.00000500; 
+      cachedPrice = 0.000000625;
+    } else {
+      inputPrice = 0.000000075; 
+      outputPrice = 0.00000030; 
+      cachedPrice = 0.0000000375;
+    }
+  } else if (provClean === "openai") {
+    if (modelClean.includes("mini")) {
+      inputPrice = 0.000000150; 
+      outputPrice = 0.00000060; 
+      cachedPrice = 0.000000075;
+    } else {
+      inputPrice = 0.00000250; 
+      outputPrice = 0.00001000; 
+      cachedPrice = 0.00000125;
+    }
+  } else if (provClean === "claude" || provClean === "anthropic") {
+    if (modelClean.includes("sonnet")) {
+      inputPrice = 0.00000300; 
+      outputPrice = 0.00001500; 
+    } else {
+      inputPrice = 0.00000025; 
+      outputPrice = 0.00000125; 
+    }
+  } else if (provClean === "google" || provClean === "google-tts") {
+    charPrice = 0.00001600;
+  } else if (provClean === "elevenlabs") {
+    charPrice = 0.00003000;
+  }
+
+  return (inputTokens * inputPrice) + (outputTokens * outputPrice) + (cachedTokens * cachedPrice) + (charCount * charPrice);
+}
+
 // Lazy server-side Supabase client initialization
-const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
-const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
 const serverSupabase = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_SERVICE_KEY || supabaseAnonKey;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const adminSupabase = supabaseUrl && supabaseServiceKey ? createClient(supabaseUrl, supabaseServiceKey) : null;
+
+let cachedPrices: any[] = [];
+let cacheLastFetched = 0;
+
+async function loadPricesCached(): Promise<any[]> {
+  const now = Date.now();
+  if (cachedPrices.length > 0 && (now - cacheLastFetched < 60000)) {
+    return cachedPrices;
+  }
+  try {
+    const client = adminSupabase || serverSupabase;
+    if (client) {
+      const { data, error } = await client.from("ai_model_prices").select("*");
+      if (!error && data && data.length > 0) {
+        cachedPrices = data;
+        cacheLastFetched = now;
+      }
+    }
+  } catch (e) {
+    console.warn("Error loading AI model prices from database:", e);
+  }
+  return cachedPrices;
+}
+
+async function computeAiCost(provider: string, model: string, inputTokens: number, outputTokens: number, cachedTokens: number = 0, charCount: number = 0): Promise<number> {
+  const prices = await loadPricesCached();
+  const provClean = String(provider).toLowerCase();
+  const modelClean = String(model).toLowerCase();
+
+  if (provClean === "ollama") return 0;
+
+  // 1. Direct match on provider and model_name
+  let priceRow = prices.find(p => p.provider.toLowerCase() === provClean && p.model_name.toLowerCase() === modelClean);
+
+  // 2. Loose match (e.g. contains name)
+  if (!priceRow) {
+    priceRow = prices.find(p => p.provider.toLowerCase() === provClean && (modelClean.includes(p.model_name.toLowerCase()) || p.model_name.toLowerCase().includes(modelClean)));
+  }
+
+  // 3. Fallback to any model under the same provider
+  if (!priceRow) {
+    priceRow = prices.find(p => p.provider.toLowerCase() === provClean);
+  }
+
+  // If we found a row, calculate cost
+  if (priceRow) {
+    const inCost = inputTokens * Number(priceRow.input_token_price_usd || 0);
+    const outCost = outputTokens * Number(priceRow.output_token_price_usd || 0);
+    const cachedCost = cachedTokens * Number(priceRow.cached_input_token_price_usd || 0);
+    const flatCost = Number(priceRow.flat_price_usd || 0);
+    const charCost = charCount * Number(priceRow.char_price_usd || 0);
+    return inCost + outCost + cachedCost + flatCost + charCost;
+  }
+
+  // Emergency fallback using original logic
+  return getAiModelCost(provider, model, inputTokens, outputTokens, cachedTokens, charCount);
+}
+
+async function checkBudget(userId: string, agentId?: string, isOllama: boolean = false, userClient?: any): Promise<{ allowed: boolean; reason?: string }> {
+  if (isOllama) return { allowed: true };
+
+  const client = adminSupabase || userClient || serverSupabase;
+  if (!client) return { allowed: true };
+
+  try {
+    // 1. Fetch user limits
+    const { data: limits, error: limitErr } = await client
+      .from("ai_usage_limits")
+      .select("*")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (limitErr) {
+      console.warn("Error fetching limits, defaulting to allowed:", JSON.stringify(limitErr));
+      return { allowed: true };
+    }
+
+    // Default to allowed if no limits defined or limit checking disabled
+    if (!limits) return { allowed: true };
+    if (!limits.stop_on_limit) return { allowed: true };
+
+    const dailyCap = Number(limits.daily_budget_usd);
+    const monthlyCap = Number(limits.monthly_budget_usd);
+    const agentMonthlyCap = Number(limits.per_agent_monthly_budget_usd);
+
+    // 2. Query usage events from this month for this user
+    const todayStr = new Date();
+    todayStr.setHours(0, 0, 0, 0);
+    const isoToday = todayStr.toISOString();
+
+    const monthStr = new Date();
+    monthStr.setDate(1);
+    monthStr.setHours(0, 0, 0, 0);
+    const isoMonth = monthStr.toISOString();
+
+    const { data: events, error: evErr } = await client
+      .from("ai_usage_events")
+      .select("estimated_cost_usd, created_at, agent_id")
+      .eq("user_id", userId)
+      .gte("created_at", isoMonth);
+
+    if (evErr) {
+      console.warn("Error calculating current spending, allowed:", evErr);
+      return { allowed: true };
+    }
+
+    let todayCost = 0;
+    let monthCost = 0;
+    let agentMonthCost = 0;
+
+    if (events) {
+      for (const ev of events) {
+        const cost = Number(ev.estimated_cost_usd || 0);
+        monthCost += cost;
+
+        const evDate = new Date(ev.created_at);
+        if (evDate >= todayStr) {
+          todayCost += cost;
+        }
+
+        if (agentId && ev.agent_id === agentId) {
+          agentMonthCost += cost;
+        }
+      }
+    }
+
+    // 3. Enforce caps
+    if (todayCost >= dailyCap) {
+      return { 
+        allowed: false, 
+        reason: `AI daily budget exceeded. Daily limit: $${dailyCap.toFixed(2)}, current: $${todayCost.toFixed(4)}.` 
+      };
+    }
+
+    if (monthCost >= monthlyCap) {
+      return { 
+        allowed: false, 
+        reason: `AI monthly budget exceeded. Monthly limit: $${monthlyCap.toFixed(2)}, current: $${monthCost.toFixed(4)}.` 
+      };
+    }
+
+    if (agentId && agentMonthCost >= agentMonthlyCap) {
+      return { 
+        allowed: false, 
+        reason: `Per-agent monthly budget exceeded. Agent limit: $${agentMonthlyCap.toFixed(2)}, current: $${agentMonthCost.toFixed(4)}.` 
+      };
+    }
+
+  } catch (err) {
+    console.error("Budget enforcement engine encountered error:", err);
+  }
+
+  return { allowed: true };
+}
 
 function extractJsonBlocks(text: string): any[] {
   const blocks: any[] = [];
@@ -259,7 +461,7 @@ async function compressMemoriesIfNecessary(userSupabase: any, userId: string, ag
 
     console.log(`Memory compression triggered! User has ${activeMems.length} active memories.`);
 
-    const memoriesListStr = activeMems.map(m => `[${m.memory_type}] ${m.title}: ${m.content}`).join("\n");
+    const memoriesListStr = activeMems.map((m: any) => `[${m.memory_type}] ${m.title}: ${m.content}`).join("\n");
     const prompt = `You are an AI memory manager. Compress the following list of active user memories into a single concise grouped summary (under 400 characters) containing recurring facts, preferences, and workflows.
 Represent everything extremely briefly. Return ONLY the raw condensed summary, nothing else. No preamble, no headers, no formatting.
 
@@ -268,7 +470,7 @@ ${memoriesListStr}`;
 
     let condensedSummary = await callGeminiSimple(prompt, 200);
     if (!condensedSummary) {
-      condensedSummary = activeMems.slice(0, 10).map(m => `${m.title}: ${m.content}`).join("; ");
+      condensedSummary = activeMems.slice(0, 10).map((m: any) => `${m.title}: ${m.content}`).join("; ");
       if (condensedSummary.length > 400) {
         condensedSummary = condensedSummary.substring(0, 397) + "...";
       }
@@ -306,12 +508,12 @@ ${memoriesListStr}`;
         });
     }
 
-    const nonSummaries = activeMems.filter(m => m.title !== "Agent Memory Summary" && m.memory_type !== "summary");
-    nonSummaries.sort((a,b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    const nonSummaries = activeMems.filter((m: any) => m.title !== "Agent Memory Summary" && m.memory_type !== "summary");
+    nonSummaries.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
     const deactivateList = nonSummaries.slice(15);
 
     if (deactivateList.length > 0) {
-      const idsToDeactivate = deactivateList.map(m => m.id);
+      const idsToDeactivate = deactivateList.map((m: any) => m.id);
       await userSupabase
         .from("ai_agent_memories")
         .update({ is_active: false })
@@ -525,8 +727,18 @@ async function startServer() {
   });
 
   app.post("/api/assistant/chat", async (req: express.Request, res: express.Response) => {
+    let failureUser: any = null;
+    let failureUserSupabase: any = null;
+    let failureAgentId: string | null = null;
+    let failureResolvedProvider = "unknown";
+    let failureAgentModelName: string | null = null;
+    let failureUserContent = "";
+
     try {
       const { message, context, mode, call_mode_enabled, agent_id, conversation_history, current_page, conversation_id } = req.body;
+
+      failureUserContent = message || "";
+      failureAgentId = agent_id || null;
 
       if (!message || typeof message !== 'string' || message.trim() === '') {
         res.status(400).json({ error: "Message is required and must be a non-empty string." });
@@ -573,6 +785,8 @@ async function startServer() {
         return;
       }
 
+      failureUser = user;
+
       const userSupabase = createClient(supabaseUrl!, supabaseAnonKey!, {
         auth: {
           persistSession: false,
@@ -584,6 +798,8 @@ async function startServer() {
           }
         }
       });
+
+      failureUserSupabase = userSupabase;
 
       // --- HYBRID CONTEXT ARCHITECTURE MULTI-TABLE DATABASE PROTOCOL ---
 
@@ -626,6 +842,8 @@ async function startServer() {
           console.warn(`Could not fetch agent ${agent_id} for user ${user.id}, fallback prompt will be used. Error:`, agentError);
         }
       }
+
+      failureAgentModelName = agentModelName;
 
       if (!agentInstructions) {
         agentInstructions = `You are ${agentName}, Boss's AI assistant inside Neth Manager. You help with schedule, emails, tasks, projects, and daily planning. Be calm, concise, practical, and proactive.`;
@@ -1040,7 +1258,21 @@ Long-term Memory Guidelines (CRITICAL):
 - Avoid duplicate memories: Check the RELEVANT MEMORIES list above first. If details overlap, do NOT write a new memory block unless updating a major difference.
 `;
 
+      const startTime = Date.now();
+      let promptTokens = 0;
+      let completionTokens = 0;
+      let totalTokens = 0;
+
       const resolvedProvider = String(agentModelProvider || mode || "gemini").toLowerCase();
+      failureResolvedProvider = resolvedProvider;
+
+      // Check budget before any online AI execution
+      const budgetCheck = await checkBudget(user.id, agent_id || undefined, resolvedProvider === "ollama", userSupabase);
+      if (!budgetCheck.allowed) {
+        clearTimeout(timeoutId);
+        res.status(400).json({ error: budgetCheck.reason });
+        return;
+      }
 
       if (resolvedProvider === "ollama") {
         clearTimeout(timeoutId);
@@ -1101,6 +1333,10 @@ Long-term Memory Guidelines (CRITICAL):
           const data = await response.json() as any;
           reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
+          promptTokens = data?.usageMetadata?.promptTokenCount || Math.ceil((systemPrompt.length + userContent.length + historyTurns.reduce((acc, t) => acc + t.content.length, 0)) / 4);
+          completionTokens = data?.usageMetadata?.candidatesTokenCount || Math.ceil(reply.length / 4);
+          totalTokens = data?.usageMetadata?.totalTokenCount || (promptTokens + completionTokens);
+
         } catch (fetchError: any) {
           clearTimeout(timeoutId);
           if (fetchError.name === "AbortError") {
@@ -1158,6 +1394,10 @@ Long-term Memory Guidelines (CRITICAL):
 
           const data = await response.json() as any;
           reply = data?.choices?.[0]?.message?.content || "";
+
+          promptTokens = data?.usage?.prompt_tokens || Math.ceil((systemPrompt.length + userContent.length + historyTurns.reduce((acc, t) => acc + t.content.length, 0)) / 4);
+          completionTokens = data?.usage?.completion_tokens || Math.ceil(reply.length / 4);
+          totalTokens = data?.usage?.total_tokens || (promptTokens + completionTokens);
 
         } catch (fetchError: any) {
           clearTimeout(timeoutId);
@@ -1227,6 +1467,10 @@ Long-term Memory Guidelines (CRITICAL):
               .join("\n");
           }
 
+          promptTokens = data?.usage?.input_tokens || Math.ceil((systemPrompt.length + userContent.length + historyTurns.reduce((acc, t) => acc + t.content.length, 0)) / 4);
+          completionTokens = data?.usage?.output_tokens || Math.ceil(reply.length / 4);
+          totalTokens = (promptTokens + completionTokens);
+
         } catch (fetchError: any) {
           clearTimeout(timeoutId);
           if (fetchError.name === "AbortError") {
@@ -1272,25 +1516,65 @@ Long-term Memory Guidelines (CRITICAL):
 
       // Log the Agent Run offensively to ai_agent_runs
       let agentRunId: string | null = null;
+      const latencyMs = Date.now() - startTime;
+      const modelUsed = agentModelName || req.body.model || (resolvedProvider === "gemini" ? "gemini-2.5-flash-lite" : resolvedProvider === "openai" ? "gpt-4.1-mini" : "claude-haiku-4-5");
+      const estimatedCost = await computeAiCost(resolvedProvider, modelUsed, promptTokens, completionTokens, 0, 0);
+
+      const dbWriterClient = adminSupabase || serverSupabase;
+
       try {
-        const { data: runRec } = await userSupabase
-          .from("ai_agent_runs")
-          .insert({
-            user_id: user.id,
-            agent_id: agent_id || null,
-            provider: resolvedProvider,
-            model: agentModelName || req.body.model || "default",
-            prompt: userContent,
-            response: reply,
-            status: "completed"
-          })
-          .select("id")
-          .single();
-        if (runRec) {
-          agentRunId = runRec.id;
+        if (dbWriterClient) {
+          const { data: runRec } = await dbWriterClient
+            .from("ai_agent_runs")
+            .insert({
+              user_id: user.id,
+              agent_id: agent_id || null,
+              provider: resolvedProvider,
+              model: modelUsed,
+              prompt: userContent,
+              response: reply,
+              status: "completed",
+              input_tokens: promptTokens,
+              output_tokens: completionTokens,
+              total_tokens: totalTokens,
+              estimated_cost_usd: estimatedCost,
+              latency_ms: latencyMs,
+              operation_type: "chat"
+            })
+            .select("id")
+            .single();
+          if (runRec) {
+            agentRunId = runRec.id;
+          }
         }
       } catch (e) {
         console.warn("Could not write inside ai_agent_runs (table may not exist yet or still preparing):", e);
+      }
+
+      // Record to direct analytical table: ai_usage_events
+      try {
+        if (dbWriterClient) {
+          await dbWriterClient
+            .from("ai_usage_events")
+            .insert({
+              user_id: user.id,
+              agent_id: agent_id || null,
+              run_id: agentRunId || null,
+              provider: resolvedProvider,
+              model_name: modelUsed,
+              operation_type: "chat",
+              input_tokens: promptTokens,
+              output_tokens: completionTokens,
+              cached_input_tokens: 0,
+              total_tokens: totalTokens,
+              char_count: 0,
+              estimated_cost_usd: estimatedCost,
+              latency_ms: latencyMs,
+              created_at: new Date().toISOString()
+            });
+        }
+      } catch (logErr) {
+        console.warn("Could not insert usage metrics log to ai_usage_events:", logErr);
       }
 
       let createdActionRow: any = null;
@@ -1532,16 +1816,16 @@ Long-term Memory Guidelines (CRITICAL):
       console.error("Error in POST /api/assistant/chat:", err);
 
       // Defensively write run failure log to DB if user context exists
-      if (typeof user !== "undefined" && user?.id) {
+      if (failureUser && failureUser.id && failureUserSupabase) {
         try {
-          await userSupabase
+          await failureUserSupabase
             .from("ai_agent_runs")
             .insert({
-              user_id: user.id,
-              agent_id: agent_id || null,
-              provider: resolvedProvider,
-              model: agentModelName || req.body.model || "default",
-              prompt: userContent,
+              user_id: failureUser.id,
+              agent_id: failureAgentId,
+              provider: failureResolvedProvider,
+              model: failureAgentModelName || req.body.model || "default",
+              prompt: failureUserContent,
               status: "failed",
               error: err.message || String(err)
             });
@@ -1678,15 +1962,16 @@ Long-term Memory Guidelines (CRITICAL):
 
       if (!toolResult.success) {
         // Log failure state to public.ai_pending_actions using userSupabase
-        await userSupabase
-          .from("ai_pending_actions")
-          .update({
-            status: "failed",
-            resolved_at: new Date().toISOString(),
-            result: { error: toolResult.message }
-          })
-          .eq("id", action_id)
-          .catch(() => {});
+        try {
+          await userSupabase
+            .from("ai_pending_actions")
+            .update({
+              status: "failed",
+              resolved_at: new Date().toISOString(),
+              result: { error: toolResult.message }
+            })
+            .eq("id", action_id);
+        } catch (e) {}
 
         res.status(400).json({ error: toolResult.message, toolResult });
         return;
@@ -1720,6 +2005,7 @@ Long-term Memory Guidelines (CRITICAL):
   });
 
   app.post("/api/assistant/tts", async (req: express.Request, res: express.Response) => {
+    const startTime = Date.now();
     try {
       const { text, provider, agent_id } = req.body;
 
@@ -1759,6 +2045,11 @@ Long-term Memory Guidelines (CRITICAL):
         return;
       }
 
+      const userSupabase = createClient(supabaseUrl!, supabaseAnonKey!, {
+        auth: { persistSession: false, autoRefreshToken: false },
+        global: { headers: { Authorization: `Bearer ${token}` } }
+      });
+
       let agentVoiceName: string | null = null;
       let agentLanguageCode: string | null = null;
       let agentVoiceId: string | null = null;
@@ -1777,6 +2068,13 @@ Long-term Memory Guidelines (CRITICAL):
         } else {
           console.warn(`Could not fetch audio settings for agent ${agent_id}. Fallback to server env used.`);
         }
+      }
+
+      // Check budget before any online TTS execution
+      const budgetCheck = await checkBudget(user.id, agent_id || undefined, false, userSupabase);
+      if (!budgetCheck.allowed) {
+        res.status(400).json({ error: budgetCheck.reason });
+        return;
       }
 
       if (provider === "elevenlabs") {
@@ -1844,6 +2142,36 @@ Long-term Memory Guidelines (CRITICAL):
           }
 
           const audioBuffer = await response.arrayBuffer();
+
+          // Log ElevenLabs character usage event
+          const latencyMs = Date.now() - startTime;
+          const charCount = text.length;
+          const estimatedCost = await computeAiCost("elevenlabs", modelId || "eleven_flash_v2_5", 0, 0, 0, charCount);
+          const dbWriterClient = adminSupabase || serverSupabase;
+          try {
+            if (dbWriterClient) {
+              await dbWriterClient
+                .from("ai_usage_events")
+                .insert({
+                  user_id: user.id,
+                  agent_id: agent_id || null,
+                  provider: "elevenlabs",
+                  model_name: modelId || "eleven_flash_v2_5",
+                  operation_type: "tts",
+                  input_tokens: 0,
+                  output_tokens: 0,
+                  cached_input_tokens: 0,
+                  total_tokens: 0,
+                  char_count: charCount,
+                  estimated_cost_usd: estimatedCost,
+                  latency_ms: latencyMs,
+                  created_at: new Date().toISOString()
+                });
+            }
+          } catch (logErr) {
+            console.warn("Could not insert ElevenLabs TTS usage log:", logErr);
+          }
+
           res.set({
             "Content-Type": "audio/mpeg",
             "Content-Length": audioBuffer.byteLength
@@ -1925,6 +2253,35 @@ Long-term Memory Guidelines (CRITICAL):
           if (!resData.audioContent) {
             res.status(500).json({ error: "No audioContent returned from Google Text-to-Speech API." });
             return;
+          }
+
+          // Log Google TTS character usage event
+          const latencyMs = Date.now() - startTime;
+          const charCount = text.length;
+          const estimatedCost = await computeAiCost("google-tts", "google-tts", 0, 0, 0, charCount);
+          const dbWriterClient = adminSupabase || serverSupabase;
+          try {
+            if (dbWriterClient) {
+              await dbWriterClient
+                .from("ai_usage_events")
+                .insert({
+                  user_id: user.id,
+                  agent_id: agent_id || null,
+                  provider: "google-tts",
+                  model_name: voiceName,
+                  operation_type: "tts",
+                  input_tokens: 0,
+                  output_tokens: 0,
+                  cached_input_tokens: 0,
+                  total_tokens: 0,
+                  char_count: charCount,
+                  estimated_cost_usd: estimatedCost,
+                  latency_ms: latencyMs,
+                  created_at: new Date().toISOString()
+                });
+            }
+          } catch (logErr) {
+            console.warn("Could not insert Google TTS usage log:", logErr);
           }
 
           const audioBuffer = Buffer.from(resData.audioContent, "base64");
@@ -2603,7 +2960,7 @@ Example format:
         return;
       }
 
-      const automationId = req.params.id;
+      const automationId = String(req.params.id);
 
       const { data: belongs, error: belongsErr } = await adminSupabase
         .from("ai_automations")
@@ -2633,13 +2990,17 @@ Example format:
         return;
       }
       const token = authHeader.substring(7);
-      const { data: { user }, error: authError } = await serverSupabase!.auth.getUser(token);
+      if (!serverSupabase || !adminSupabase) {
+        res.status(500).json({ error: "Admin Supabase database client not configured." });
+        return;
+      }
+      const { data: { user }, error: authError } = await serverSupabase.auth.getUser(token);
       if (authError || !user) {
         res.status(401).json({ error: "Unauthorized." });
         return;
       }
 
-      const { data, error } = await adminSupabase!
+      const { data, error } = await adminSupabase
         .from("ai_automations")
         .select("*")
         .eq("user_id", user.id)
@@ -2660,7 +3021,11 @@ Example format:
         return;
       }
       const token = authHeader.substring(7);
-      const { data: { user }, error: authError } = await serverSupabase!.auth.getUser(token);
+      if (!serverSupabase || !adminSupabase) {
+        res.status(500).json({ error: "Admin Supabase database client not configured." });
+        return;
+      }
+      const { data: { user }, error: authError } = await serverSupabase.auth.getUser(token);
       if (authError || !user) {
         res.status(401).json({ error: "Unauthorized." });
         return;
@@ -2673,7 +3038,7 @@ Example format:
       }
 
       // Verify agent_id belongs to the logged-in user
-      const { data: agentExists, error: agentExistsError } = await adminSupabase!
+      const { data: agentExists, error: agentExistsError } = await adminSupabase
         .from("ai_agents")
         .select("id")
         .eq("id", agent_id)
@@ -2726,7 +3091,11 @@ Example format:
         return;
       }
       const token = authHeader.substring(7);
-      const { data: { user }, error: authError } = await serverSupabase!.auth.getUser(token);
+      if (!serverSupabase || !adminSupabase) {
+        res.status(500).json({ error: "Admin Supabase database client not configured." });
+        return;
+      }
+      const { data: { user }, error: authError } = await serverSupabase.auth.getUser(token);
       if (authError || !user) {
         res.status(401).json({ error: "Unauthorized." });
         return;
@@ -2735,7 +3104,7 @@ Example format:
       const autId = req.params.id;
       const { name, agent_id, automation_type, description, enabled, schedule_type, schedule_config, requires_confirmation } = req.body;
 
-      const { data: exists } = await adminSupabase!.from("ai_automations").select("*").eq("id", autId).eq("user_id", user.id).maybeSingle();
+      const { data: exists } = await adminSupabase.from("ai_automations").select("*").eq("id", autId).eq("user_id", user.id).maybeSingle();
       if (!exists) {
         res.status(404).json({ error: "Automation task not found." });
         return;
@@ -2801,14 +3170,18 @@ Example format:
         return;
       }
       const token = authHeader.substring(7);
-      const { data: { user }, error: authError } = await serverSupabase!.auth.getUser(token);
+      if (!serverSupabase || !adminSupabase) {
+        res.status(500).json({ error: "Admin Supabase database client not configured." });
+        return;
+      }
+      const { data: { user }, error: authError } = await serverSupabase.auth.getUser(token);
       if (authError || !user) {
         res.status(401).json({ error: "Unauthorized." });
         return;
       }
 
       const autId = req.params.id;
-      const { data: exists } = await adminSupabase!.from("ai_automations").select("id").eq("id", autId).eq("user_id", user.id).maybeSingle();
+      const { data: exists } = await adminSupabase.from("ai_automations").select("id").eq("id", autId).eq("user_id", user.id).maybeSingle();
       if (!exists) {
         res.status(404).json({ error: "Does not exist or invalid owner access." });
         return;
@@ -2834,13 +3207,17 @@ Example format:
         return;
       }
       const token = authHeader.substring(7);
-      const { data: { user }, error: authError } = await serverSupabase!.auth.getUser(token);
+      if (!serverSupabase || !adminSupabase) {
+        res.status(500).json({ error: "Admin Supabase database client not configured." });
+        return;
+      }
+      const { data: { user }, error: authError } = await serverSupabase.auth.getUser(token);
       if (authError || !user) {
         res.status(401).json({ error: "Unauthorized." });
         return;
       }
 
-      const { data, error } = await adminSupabase!
+      const { data, error } = await adminSupabase
         .from("ai_automation_runs")
         .select(`
           id,
@@ -2870,13 +3247,17 @@ Example format:
         return;
       }
       const token = authHeader.substring(7);
-      const { data: { user }, error: authError } = await serverSupabase!.auth.getUser(token);
+      if (!serverSupabase || !adminSupabase) {
+        res.status(500).json({ error: "Admin Supabase database client not configured." });
+        return;
+      }
+      const { data: { user }, error: authError } = await serverSupabase.auth.getUser(token);
       if (authError || !user) {
         res.status(401).json({ error: "Unauthorized." });
         return;
       }
 
-      const { data, error } = await adminSupabase!
+      const { data, error } = await adminSupabase
         .from("ai_notifications")
         .select("*")
         .eq("user_id", user.id)
@@ -2897,13 +3278,17 @@ Example format:
         return;
       }
       const token = authHeader.substring(7);
-      const { data: { user }, error: authError } = await serverSupabase!.auth.getUser(token);
+      if (!serverSupabase || !adminSupabase) {
+        res.status(500).json({ error: "Admin Supabase database client not configured." });
+        return;
+      }
+      const { data: { user }, error: authError } = await serverSupabase.auth.getUser(token);
       if (authError || !user) {
         res.status(401).json({ error: "Unauthorized." });
         return;
       }
 
-      const { error } = await adminSupabase!
+      const { error } = await adminSupabase
         .from("ai_notifications")
         .update({ 
           is_read: true,

@@ -69,7 +69,7 @@ interface AIContextType {
 const DEFAULT_AI_SETTINGS = {
   enabled: true,
   ollama_endpoint: "http://localhost:11434/api/generate",
-  model_name: "llama3:latest",
+  model_name: "gemma4:12b",
   temperature: 0.7,
   max_tokens: 2048,
   allow_sensitive_context: false
@@ -286,7 +286,19 @@ export function AIProvider({ children }: { children: React.ReactNode }) {
       });
       if (!response.ok) return;
 
-      const result = await response.json();
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        console.warn("Expected JSON response from /api/assistant/actions/pending, but got:", contentType);
+        return;
+      }
+
+      let result;
+      try {
+        result = await response.json();
+      } catch (jsonErr) {
+        console.warn("Error parsing JSON response from /api/assistant/actions/pending:", jsonErr);
+        return;
+      }
       const mapped = (result.pending_actions || []).map((row: any) => ({
         id: row.id,
         type: row.action_type.startsWith("create") ? "create" : "update",
@@ -705,17 +717,23 @@ const callModeInstruction = `
 `;
 
       const objectivesSection = activeAgent?.objectives ? `\nAGENT OBJECTIVES:\n${activeAgent.objectives}` : '';
-      const activePrompt = activeAgent ? `AGENT NAME: ${activeAgent.name}
+const activePrompt = activeAgent ? `AGENT NAME: ${activeAgent.name}
 AGENT ROLE: ${activeAgent.role}
 AGENT SKILLS: ${activeAgent.enabled_tools.join(', ')}${objectivesSection}
 AGENT INSTRUCTIONS:
 ${activeAgent.system_prompt}` : `You are Emily, Boss's executive AI assistant inside Neth Manager. You help with schedule, emails, tasks, projects, and daily planning. Be calm, concise, practical, and proactive.`;
 
-      const systemPrompt = `${activePrompt}
+const recentConversationForLocal = recentConversation
+  .slice(0, -1)
+  .map(msg => `${msg.role === 'user' ? 'Boss' : 'Assistant'}: ${msg.content}`)
+  .join('\n');
+
+const systemPrompt = `${activePrompt}
 CURRENT PAGE: ${location.pathname}
 MODE: ${isFastMode ? 'FAST_RESPONSE' : 'BALANCED'}
 ${isDetailedMode ? 'CONTEXT_TYPE: FULL_DETAIL' : 'CONTEXT_TYPE: CONCISE'}
 ${(callModeEnabled || (activeAgent && activeAgent.call_mode_default)) ? '\nCALL_MODE_ACTIVE: true\n' + callModeInstruction : ''}
+${recentConversationForLocal ? `\nRECENT_CONVERSATION:\n${recentConversationForLocal}\n` : ''}
 
 SECURITY PROTOCOL:
 - Never reveal private records or sensitive data in bulk.

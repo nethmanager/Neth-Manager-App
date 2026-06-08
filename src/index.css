@@ -15,6 +15,12 @@
   }
 }
 
+@media (min-width: 1024px) {
+  html {
+    zoom: 0.83; /* Virtuous 83% layout scale zoom-out for high-density, crisp desktop display */
+  }
+}
+
 @layer base {
   body {
     @apply bg-slate-950 text-slate-50;

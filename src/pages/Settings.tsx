@@ -10,8 +10,29 @@ import {
   Plus,
   Trash2,
   Edit3,
-  Volume2
+  Volume2,
+  UserCheck,
+  Key,
+  RefreshCw,
+  Server,
+  Cpu,
+  Cloud,
+  DollarSign,
+  CreditCard,
+  Clock,
+  Activity,
+  Loader2,
+  AlertCircle,
+  Eye,
+  EyeOff,
+  ShieldAlert,
+  FileText,
+  Sliders,
+  ChevronRight,
+  Info,
+  Phone
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { cn } from '../lib/utils';
 import { supabase } from '../lib/supabaseClient';
 import { useUser } from '../hooks/useUser';
@@ -41,6 +62,7 @@ const FALLBACK_VOICES = [
 ];
 
 export default function Settings() {
+  const navigate = useNavigate();
   const { user } = useUser();
   const { showToast, confirm } = useUI();
   const { 
@@ -66,27 +88,83 @@ export default function Settings() {
   } = useAI();
   const [activeTab, setActiveTab] = useState<'profile' | 'ai' | 'agents' | 'prompts' | 'security'>('profile');
   const [testingVoice, setTestingVoice] = useState(false);
+  const [agentStats, setAgentStats] = useState<Record<string, any>>({});
+  const [statsLoading, setStatsLoading] = useState(false);
 
   const [editingAgent, setEditingAgent] = useState<any | null>(null);
   const [isCreatingNew, setIsCreatingNew] = useState(false);
   const [voiceOptions, setVoiceOptions] = useState<any[]>(FALLBACK_VOICES);
   const agentFormRef = useRef<HTMLDivElement | null>(null);
 
+  // Budget state variables
+  const [budgetSettings, setBudgetSettings] = useState({
+    daily_budget_usd: 10.00,
+    monthly_budget_usd: 100.00,
+    per_agent_monthly_budget_usd: 10.00,
+    stop_on_limit: true,
+    warn_threshold_percent: 80.00
+  });
+  const [saveBudgetLoading, setSaveBudgetLoading] = useState(false);
+
+  // Global blueprints for new agents (localStorage defaults)
+  const [defaultNewAgentProvider, setDefaultNewAgentProvider] = useState(() => localStorage.getItem('default_new_agent_provider') || 'gemini');
+  // Note: model_name and temperature defaults reside in the existing `aiSettings.model_name` and `aiSettings.temperature` states
+  const [defaultNewAgentVoiceProvider, setDefaultNewAgentVoiceProvider] = useState(() => localStorage.getItem('default_new_agent_voice_provider') || 'google');
+  const [defaultNewAgentVoiceName, setDefaultNewAgentVoiceName] = useState(() => localStorage.getItem('default_new_agent_voice_name') || 'en-US-Chirp3-HD-Aoede');
+  const [defaultNewAgentCallMode, setDefaultNewAgentCallMode] = useState(() => localStorage.getItem('default_new_agent_call_mode') === 'true');
+
+  // Runtime & Fallback states
+  const [preferredRuntimeBehavior, setPreferredRuntimeBehavior] = useState(() => localStorage.getItem('ai_preferred_runtime') || 'cloud_first');
+  const [cloudFallbackOnMobile, setCloudFallbackOnMobile] = useState(() => localStorage.getItem('ai_fallback_mobile_tablet') !== 'false');
+  const [ollamaLocalOnly, setOllamaLocalOnly] = useState(() => localStorage.getItem('ai_use_ollama_local_only') === 'true');
+
+  // Privacy & Safety states
+  const [defaultSafetyDbApproval, setDefaultSafetyDbApproval] = useState(() => localStorage.getItem('default_safety_db_approval') !== 'false');
+  const [defaultSafetyPublishApproval, setDefaultSafetyPublishApproval] = useState(() => localStorage.getItem('default_safety_publish_approval') !== 'false');
+  const [defaultSafetyMessagingApproval, setDefaultSafetyMessagingApproval] = useState(() => localStorage.getItem('default_safety_messaging_approval') !== 'false');
+  const [defaultSafetyRememberPrefs, setDefaultSafetyRememberPrefs] = useState(() => localStorage.getItem('default_safety_remember_prefs') !== 'false');
+  const [defaultSafetySummarizeConvos, setDefaultSafetySummarizeConvos] = useState(() => localStorage.getItem('default_safety_summarize_convos') !== 'false');
+
+  // Maintenance & Ollama Status
+  const [ollamaStatus, setOllamaStatus] = useState<'checking' | 'active' | 'inactive'>('checking');
+  const [recentTransactionLogs, setRecentTransactionLogs] = useState<any[]>([]);
+  const [showLogsModal, setShowLogsModal] = useState(false);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [recalculatingLogs, setRecalculatingLogs] = useState(false);
+
+  // Global overview stats
+  const [globalStats, setGlobalStats] = useState({
+    todayCost: 0,
+    monthCost: 0,
+    lastRunTime: null as string | null,
+    lastRunCost: 0,
+    activeAgentsCount: 0
+  });
+
   const openNewAgent = () => {
+    // Read from state or localStorage
+    const defProvider = defaultNewAgentProvider || 'gemini';
+    const defModel = aiSettings.model_name || 'gemini-2.5-flash-lite';
+    const defTemp = aiSettings.temperature ?? 0.7;
+    const defVoiceProv = defaultNewAgentVoiceProvider || 'google';
+    const defVoiceName = defaultNewAgentVoiceName || 'en-US-Chirp3-HD-Aoede';
+    const defCallMode = defaultNewAgentCallMode;
+
     setEditingAgent({
       name: '',
       role: '',
       description: '',
       objectives: '',
       system_prompt: '',
-      model_provider: 'gemini',
-      model_name: 'gemini-2.5-flash-lite',
-      voice_provider: 'google',
+      model_provider: defProvider,
+      model_name: defModel,
+      temperature: defTemp,
+      voice_provider: defVoiceProv,
       voice_id: null,
-      voice_name: 'en-US-Chirp3-HD-Aoede',
-      voice_language_code: 'en-US',
+      voice_name: defVoiceName,
+      voice_language_code: defVoiceName.startsWith('en-') ? 'en-US' : 'en-US',
       enabled_tools: ['dashboard', 'schedule', 'emails', 'tasks', 'projects'],
-      call_mode_default: false,
+      call_mode_default: defCallMode,
       is_default: false,
       is_active: true,
       permissions: ['*'],
@@ -103,7 +181,7 @@ export default function Settings() {
       }
     });
     setIsCreatingNew(true);
-    showToast.success("New agent form opened");
+    showToast.success("New agent blueprint loaded successfully!");
     setTimeout(() => {
       agentFormRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 100);
@@ -171,6 +249,168 @@ export default function Settings() {
     };
     fetchVoiceOptions();
   }, []);
+
+  useEffect(() => {
+    const fetchStats = async () => {
+      if (!user) return;
+      setStatsLoading(true);
+      try {
+        const todayStr = new Date();
+        todayStr.setHours(0, 0, 0, 0);
+        const isoToday = todayStr.toISOString();
+
+        const monthStr = new Date();
+        monthStr.setDate(1);
+        monthStr.setHours(0, 0, 0, 0);
+        const isoMonth = monthStr.toISOString();
+
+        const { data: events, error } = await supabase
+          .from('ai_usage_events')
+          .select('*')
+          .eq('user_id', user.id)
+          .gte('created_at', isoMonth);
+
+        if (!error && events) {
+          const stats: Record<string, any> = {};
+          
+          let todayCost = 0;
+          let monthCost = 0;
+          let lastRunTime: string | null = null;
+          let lastRunCost = 0;
+
+          for (const ag of agents) {
+            stats[ag.id] = {
+              todayTokens: 0,
+              monthTokens: 0,
+              todayCost: 0,
+              monthCost: 0,
+              msgCount: 0,
+              totalChatCost: 0,
+              lastRunCost: 0,
+              lastRunTime: null
+            };
+          }
+
+          for (const ev of events) {
+            const aId = ev.agent_id || 'global';
+            if (!stats[aId]) {
+              stats[aId] = {
+                todayTokens: 0,
+                monthTokens: 0,
+                todayCost: 0,
+                monthCost: 0,
+                msgCount: 0,
+                totalChatCost: 0,
+                lastRunCost: 0,
+                lastRunTime: null
+              };
+            }
+
+            const evDate = new Date(ev.created_at);
+            const isToday = evDate >= todayStr;
+            const cost = Number(ev.estimated_cost_usd || 0);
+            const tokens = Number(ev.total_tokens || 0);
+
+            monthCost += cost;
+            if (isToday) {
+              todayCost += cost;
+            }
+
+            if (!lastRunTime || ev.created_at > lastRunTime) {
+              lastRunTime = ev.created_at;
+              lastRunCost = cost;
+            }
+
+            stats[aId].monthTokens += tokens;
+            stats[aId].monthCost += cost;
+
+            if (isToday) {
+              stats[aId].todayTokens += tokens;
+              stats[aId].todayCost += cost;
+            }
+
+            if (ev.operation_type === 'chat') {
+              stats[aId].msgCount += 1;
+              stats[aId].totalChatCost += cost;
+            }
+
+            if (!stats[aId].lastRunTime || ev.created_at > stats[aId].lastRunTime) {
+              stats[aId].lastRunTime = ev.created_at;
+              stats[aId].lastRunCost = cost;
+            }
+          }
+          setAgentStats(stats);
+          setGlobalStats({
+            todayCost,
+            monthCost,
+            lastRunTime,
+            lastRunCost,
+            activeAgentsCount: agents.filter((a: any) => a.is_active).length
+          });
+        }
+      } catch (err) {
+        console.error("Error fetching agent analytical stats:", err);
+      } finally {
+        setStatsLoading(false);
+      }
+    };
+
+    fetchStats();
+  }, [user, agents]);
+
+  // Load initial usage limit caps
+  useEffect(() => {
+    const loadLimits = async () => {
+      if (!user) return;
+      try {
+        const { data, error } = await supabase
+          .from('ai_usage_limits')
+          .select('*')
+          .eq('user_id', user.id)
+          .maybeSingle();
+        
+        if (!error && data) {
+          setBudgetSettings({
+            daily_budget_usd: Number(data.daily_budget_usd),
+            monthly_budget_usd: Number(data.monthly_budget_usd),
+            per_agent_monthly_budget_usd: Number(data.per_agent_monthly_budget_usd),
+            stop_on_limit: data.stop_on_limit,
+            warn_threshold_percent: Number(data.warn_threshold_percent)
+          });
+        }
+      } catch (err) {
+        console.error("Error fetching usage limits:", err);
+      }
+    };
+    loadLimits();
+  }, [user]);
+
+  // Save budget handler
+  const handleSaveBudget = async () => {
+    if (!user) return;
+    setSaveBudgetLoading(true);
+    try {
+      const { error } = await supabase
+        .from('ai_usage_limits')
+        .upsert({
+          user_id: user.id,
+          daily_budget_usd: budgetSettings.daily_budget_usd,
+          monthly_budget_usd: budgetSettings.monthly_budget_usd,
+          per_agent_monthly_budget_usd: budgetSettings.per_agent_monthly_budget_usd,
+          stop_on_limit: budgetSettings.stop_on_limit,
+          warn_threshold_percent: budgetSettings.warn_threshold_percent,
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'user_id' });
+      
+      if (error) throw error;
+      showToast.success('Global AI budgets and stop policies saved successfully!');
+    } catch (err: any) {
+      console.error("Error saving limits:", err);
+      showToast.error(`Budget error: ${err.message}`);
+    } finally {
+      setSaveBudgetLoading(false);
+    }
+  };
 
   const handleSetActiveAgent = (id: string) => {
     setActiveAgentId(id);
@@ -313,7 +553,7 @@ export default function Settings() {
   const [aiSettings, setAiSettings] = useState({
     enabled: true,
     ollama_endpoint: 'http://localhost:11434/api/generate',
-    model_name: 'llama3:latest',
+    model_name: 'gemma4:12b',
     temperature: 0.7,
     max_tokens: 2048,
     allow_sensitive_context: false
@@ -341,7 +581,7 @@ export default function Settings() {
         setAiSettings({
           enabled: aiSettingsData.enabled,
           ollama_endpoint: aiSettingsData.ollama_endpoint || 'http://localhost:11434/api/generate',
-          model_name: aiSettingsData.model_name || 'llama3:latest',
+          model_name: (['llama3:latest', 'llama3.2:3b', 'gemma3:4b', 'qwen2.5:7b', 'mistral:latest'].includes(aiSettingsData.model_name)) ? 'gemma4:12b' : (aiSettingsData.model_name || 'gemma4:12b'),
           temperature: aiSettingsData.temperature ?? 0.7,
           max_tokens: aiSettingsData.max_tokens ?? 2048,
           allow_sensitive_context: aiSettingsData.allow_sensitive_context ?? false
@@ -376,7 +616,7 @@ export default function Settings() {
       const cleanAiSettings = {
         enabled: !!aiSettings.enabled,
         ollama_endpoint: aiSettings.ollama_endpoint?.trim() || 'http://localhost:11434/api/generate',
-        model_name: aiSettings.model_name?.trim() || 'llama3:latest',
+        model_name: aiSettings.model_name?.trim() || 'gemma4:12b',
         temperature: aiSettings.temperature ?? 0.7,
         max_tokens: aiSettings.max_tokens ?? 2048,
         allow_sensitive_context: !!aiSettings.allow_sensitive_context
@@ -395,6 +635,26 @@ export default function Settings() {
         ...cleanAiSettings,
         updated_at: timestamp
       });
+
+      // Save global defaults to localStorage for newly created agents
+      localStorage.setItem('default_new_agent_provider', defaultNewAgentProvider);
+      localStorage.setItem('default_new_agent_model', aiSettings.model_name || 'gemini-2.5-flash-lite');
+      localStorage.setItem('default_new_agent_temperature', String(aiSettings.temperature ?? 0.7));
+      localStorage.setItem('default_new_agent_voice_provider', defaultNewAgentVoiceProvider);
+      localStorage.setItem('default_new_agent_voice_name', defaultNewAgentVoiceName);
+      localStorage.setItem('default_new_agent_call_mode', String(defaultNewAgentCallMode));
+
+      // Save runtime & fallbacks to localStorage
+      localStorage.setItem('ai_preferred_runtime', preferredRuntimeBehavior);
+      localStorage.setItem('ai_fallback_mobile_tablet', String(cloudFallbackOnMobile));
+      localStorage.setItem('ai_use_ollama_local_only', String(ollamaLocalOnly));
+
+      // Save safety defaults to localStorage
+      localStorage.setItem('default_safety_db_approval', String(defaultSafetyDbApproval));
+      localStorage.setItem('default_safety_publish_approval', String(defaultSafetyPublishApproval));
+      localStorage.setItem('default_safety_messaging_approval', String(defaultSafetyMessagingApproval));
+      localStorage.setItem('default_safety_remember_prefs', String(defaultSafetyRememberPrefs));
+      localStorage.setItem('default_safety_summarize_convos', String(defaultSafetySummarizeConvos));
 
       // Log activity (do not block)
       supabase.from('activity_logs').insert({
@@ -477,15 +737,131 @@ export default function Settings() {
   }
 };
 
+  const loadRecentTransactions = async () => {
+    if (!user) return;
+    setLogsLoading(true);
+    setShowLogsModal(true);
+    try {
+      const { data, error } = await supabase
+        .from('ai_usage_events')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(25);
+      
+      if (!error && data) {
+        setRecentTransactionLogs(data);
+      } else if (error) {
+        showToast.error("Failed to load logs: " + error.message);
+      }
+    } catch (err: any) {
+      showToast.error("Logs error: " + err.message);
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
+  const handleClearCache = () => {
+    try {
+      localStorage.removeItem('ai_context_cache');
+      localStorage.removeItem('ai_synced_data');
+      showToast.success("AI cache and local conversation weights cleared successfully!");
+    } catch (err: any) {
+      showToast.error("Failed to clear cache: " + err.message);
+    }
+  };
+
+  const handleRecalculateUsage = async () => {
+    if (!user) return;
+    setRecalculatingLogs(true);
+    try {
+      const todayStr = new Date();
+      todayStr.setHours(0, 0, 0, 0);
+      const isoToday = todayStr.toISOString();
+
+      const monthStr = new Date();
+      monthStr.setDate(1);
+      monthStr.setHours(0, 0, 0, 0);
+      const isoMonth = monthStr.toISOString();
+
+      const { data: events, error } = await supabase
+        .from('ai_usage_events')
+        .select('*')
+        .eq('user_id', user.id)
+        .gte('created_at', isoMonth);
+
+      if (!error && events) {
+        let todayCost = 0;
+        let monthCost = 0;
+        let lastRunTime: string | null = null;
+        let lastRunCost = 0;
+
+        for (const ev of events) {
+          const evDate = new Date(ev.created_at);
+          const isToday = evDate >= todayStr;
+          const cost = Number(ev.estimated_cost_usd || 0);
+
+          monthCost += cost;
+          if (isToday) {
+            todayCost += cost;
+          }
+
+          if (!lastRunTime || ev.created_at > lastRunTime) {
+            lastRunTime = ev.created_at;
+            lastRunCost = cost;
+          }
+        }
+
+        setGlobalStats({
+          todayCost,
+          monthCost,
+          lastRunTime,
+          lastRunCost,
+          activeAgentsCount: agents.filter((a: any) => a.is_active).length
+        });
+        showToast.success(`Quota totals cross-audited. Spent compiled: $${monthCost.toFixed(4)} this month.`);
+      }
+    } catch (e: any) {
+      showToast.error("Recalculation failed: " + e.message);
+    } finally {
+      setRecalculatingLogs(false);
+    }
+  };
+
+  const handleInspectFailures = async () => {
+    if (!user) return;
+    try {
+      setLogsLoading(true);
+      setShowLogsModal(true);
+      const { data, error } = await supabase
+        .from('ai_usage_events')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(20);
+      
+      if (!error && data) {
+        setRecentTransactionLogs(data);
+        showToast.success("Diagnostic tracing logs compiled.");
+      } else if (error) {
+        showToast.error("Failed to load trace: " + error.message);
+      }
+    } catch (e: any) {
+      showToast.error("Trace failed: " + e.message);
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
   return (
-    <div className="max-w-4xl space-y-8">
+    <div className="w-full max-w-[1500px] mx-auto space-y-8 px-0">
       <div>
         <h2 className="text-3xl font-bold text-white tracking-tight mb-2">Settings</h2>
         <p className="text-white/40 text-sm">Manage your profile, AI preferences, and application settings.</p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-        <div className="md:col-span-1 space-y-2">
+      <div className="grid grid-cols-1 lg:grid-cols-[260px_minmax(0,1fr)] gap-8">
+        <div className="space-y-2">
           {[
             { id: 'profile', label: 'User Profile', icon: User },
             { id: 'ai', label: 'AI Settings', icon: Bot },
@@ -507,7 +883,7 @@ export default function Settings() {
           ))}
         </div>
 
-        <div className="md:col-span-2 space-y-6">
+        <div className="min-w-0 space-y-6">
           {/* Profile Section */}
           {activeTab === 'profile' && (
             <div className="p-8 rounded-3xl bg-white/5 border border-white/10 space-y-6 shadow-xl backdrop-blur-sm animate-in fade-in slide-in-from-bottom-2 duration-300">
@@ -550,230 +926,916 @@ export default function Settings() {
 
           {/* AI Intelligence Section */}
           {activeTab === 'ai' && (
-            <div className="p-8 rounded-3xl bg-white/5 border border-white/10 space-y-6 shadow-xl backdrop-blur-sm animate-in fade-in slide-in-from-bottom-2 duration-300">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-bold text-white uppercase tracking-tight flex items-center gap-3">
-                  <Bot size={20} className="text-purple-400" /> Intelligence Engine
-                </h3>
-                <button 
-                  onClick={() => setAiSettings({...aiSettings, enabled: !aiSettings.enabled})}
-                  className={cn(
-                    "px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-[0.2em] transition-all",
-                    aiSettings.enabled ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400"
-                  )}
-                >
-                  {aiSettings.enabled ? 'Enabled' : 'Disabled'}
-                </button>
-              </div>
-
-              <div className="space-y-4">
-                <div className={cn("transition-all duration-300", provider !== 'ollama' && "opacity-30 pointer-events-none")}>
-                  <label className="block text-[10px] font-bold text-white/30 uppercase tracking-[0.2em] mb-2 px-1">Ollama API URL</label>
-                  <div className="flex gap-2">
-                    <input 
-                      type="text" 
-                      disabled={provider !== 'ollama'}
-                      className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-purple-500 transition-all"
-                      value={aiSettings.ollama_endpoint}
-                      onChange={(e) => setAiSettings({...aiSettings, ollama_endpoint: e.target.value})}
-                    />
-                    <button 
-                      disabled={provider !== 'ollama'}
-                      onClick={testConnection}
-                      className="px-4 rounded-2xl bg-white/5 border border-white/10 text-white/40 hover:text-white transition-all flex items-center justify-center"
-                      title="Test Connection"
-                    >
-                      <Terminal size={18} />
-                    </button>
-                  </div>
-                  <div className="mt-4 p-4 rounded-2xl bg-blue-500/5 border border-blue-500/10 space-y-2">
-                    <p className="text-[10px] text-white/40 font-bold uppercase tracking-widest leading-relaxed">
-                      To use Ollama from this hosted dev app, start Ollama with:
+            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+              {/* SECTION 1: COMPACT AI OVERVIEW BANNER */}
+              <div className="p-6 rounded-[2rem] bg-gradient-to-br from-slate-950/90 to-purple-950/40 border border-white/10 shadow-2xl backdrop-blur-sm">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+                  <div>
+                    <h3 className="text-xl font-bold text-white uppercase tracking-tight flex items-center gap-2.5">
+                      <Cpu size={24} className="text-purple-400" /> Global AI Control Center
+                    </h3>
+                    <p className="text-[10px] text-white/40 uppercase tracking-widest font-bold mt-1">
+                      System-wide quotas, fallback behavior, blueprints, and local endpoint routing
                     </p>
-                    <code className="block p-3 rounded-lg bg-black/40 text-blue-400 text-[10px] font-mono break-all leading-loose">
-                      $env:OLLAMA_ORIGINS="https://ais-dev-dkobt4keatbfrwa5de7sxh-22129348999.us-central1.run.app,http://localhost:3000"<br />
-                      ollama serve
-                    </code>
                   </div>
-                  {testResult && (
-                    <p className={cn(
-                      "text-[10px] mt-4 font-bold uppercase tracking-widest px-1",
-                      testResult.includes('Connected') ? "text-emerald-400" : "text-amber-400"
-                    )}>
-                      {testResult}
-                    </p>
-                  )}
-                </div>
-                <div className="grid grid-cols-3 gap-4">
-                  <div>
-                    <label className="block text-[10px] font-bold text-white/30 uppercase tracking-[0.2em] mb-2 px-1">AI Engine Provider</label>
-                    <select 
-                      className="w-full bg-black/40 border border-white/10 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-purple-500 transition-all font-bold text-blue-400"
-                      value={provider}
-                      onChange={(e) => setProvider(e.target.value as any)}
-                    >
-                      <option value="gemini" className="text-white">Gemini Online</option>
-                      <option value="openai" className="text-white">OpenAI Online</option>
-                      <option value="ollama" className="text-white">Ollama Local</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-bold text-white/30 uppercase tracking-[0.2em] mb-2 px-1">Local Model</label>
-                    <select 
-                      disabled={provider !== 'ollama'}
-                      className="w-full bg-black/40 border border-white/10 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-purple-500 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                      value={aiSettings.model_name}
-                      onChange={(e) => setAiSettings({...aiSettings, model_name: e.target.value})}
-                    >
-                      <option value="gemma3:4b">Gemma 3 4B</option>
-                      <option value="qwen3:8b">Qwen 3 8B</option>
-                      <option value="llama3.2:3b">Llama 3.2 3B</option>
-                      <option value="llama3:latest">Llama 3</option>
-                      <option value="mistral:latest">Mistral</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-bold text-white/30 uppercase tracking-[0.2em] mb-2 px-1">Temperature</label>
-                    <input 
-                      type="number" 
-                      step="0.1" 
-                      min="0" 
-                      max="1"
-                      className="w-full bg-black/40 border border-white/10 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-purple-500 transition-all"
-                      value={aiSettings.temperature}
-                      onChange={(e) => setAiSettings({...aiSettings, temperature: parseFloat(e.target.value)})}
-                    />
-                  </div>
-                </div>
-                <div className="pt-2 border-t border-white/5 space-y-4">
-                  <div className="flex items-center justify-between p-4 rounded-2xl bg-black/20">
-                    <div>
-                      <h4 className="text-[10px] font-black uppercase tracking-widest text-white mb-1">Fast Mode</h4>
-                      <p className="text-[9px] text-white/30 uppercase leading-relaxed font-bold">Favor speed over depth.</p>
-                    </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-[9px] uppercase font-black px-2.5 py-1 rounded-full tracking-wider bg-white/5 border border-white/10 text-white/50">
+                      System Status
+                    </span>
                     <button 
-                      onClick={() => setIsFastMode(!isFastMode)}
+                      onClick={() => setAiSettings({...aiSettings, enabled: !aiSettings.enabled})}
                       className={cn(
-                        "w-12 h-6 rounded-full transition-all relative",
-                        isFastMode ? "bg-amber-500" : "bg-white/10"
+                        "px-4 py-1.5 rounded-full text-[9px] font-black uppercase tracking-[0.2em] transition-all duration-300 shadow-md",
+                        aiSettings.enabled ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400"
                       )}
                     >
-                      <div className={cn(
-                        "absolute top-1 w-4 h-4 rounded-full bg-white transition-all",
-                        isFastMode ? "right-1" : "left-1"
-                      )} />
+                      {aiSettings.enabled ? 'Enabled' : 'Disabled'}
                     </button>
                   </div>
+                </div>
 
-                  <div className="flex flex-col gap-4 p-4 rounded-2xl bg-black/20">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h4 className="text-[10px] font-black uppercase tracking-widest text-white mb-1">Pass sensitive context</h4>
-                        <p className="text-[9px] text-white/30 uppercase leading-relaxed font-bold">Include contact details and sensitive notes in AI prompts.</p>
-                      </div>
-                      <button 
-                        onClick={() => setAiSettings({...aiSettings, allow_sensitive_context: !aiSettings.allow_sensitive_context})}
-                        className={cn(
-                          "w-12 h-6 rounded-full transition-all relative",
-                          aiSettings.allow_sensitive_context ? "bg-amber-500" : "bg-white/10"
-                        )}
-                      >
-                        <div className={cn(
-                          "absolute top-1 w-4 h-4 rounded-full bg-white transition-all",
-                          aiSettings.allow_sensitive_context ? "right-1" : "left-1"
-                        )} />
-                      </button>
+                {/* OVERVIEW COMPACT STATS GRID */}
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3.5">
+                  {/* Active Agents */}
+                  <div className="bg-black/35 border border-white/5 rounded-2xl p-4 flex flex-col justify-between hover:border-white/15 transition-all min-w-0 overflow-hidden">
+                    <span className="text-[9px] font-black uppercase text-white/35 tracking-widest flex items-center gap-1.5 font-sans truncate" title="Active Agents">
+                      <UserCheck size={11} className="text-blue-400 shrink-0" /> <span className="truncate">Active Agents</span>
+                    </span>
+                    <div className="mt-2.5 min-w-0">
+                      <span className="text-xl font-extrabold text-white block truncate" title={String(globalStats.activeAgentsCount)}>{globalStats.activeAgentsCount}</span>
+                      <p className="text-[8px] font-semibold text-white/20 uppercase tracking-wide mt-0.5 font-sans truncate">Assigned Profiles</p>
                     </div>
-                    {!aiSettings.allow_sensitive_context && (
-                      <p className="text-[9px] font-bold text-emerald-500/60 uppercase tracking-wider border-t border-white/5 pt-2">
-                        Recommendation: Keep this OFF. Ollama will not see private notes or contact details.
-                      </p>
-                    )}
-                    {aiSettings.allow_sensitive_context && (
-                      <p className="text-[9px] font-bold text-amber-500 uppercase tracking-wider border-t border-white/5 pt-2">
-                        Warning: AI will see unredacted phone numbers, addresses, and business notes. Absolute secrets (tokens/passwords) are always redacted.
-                      </p>
-                    )}
                   </div>
 
-                  {/* Premium Cloud Voice Settings */}
-                  <div className="pt-6 border-t border-white/5 space-y-4">
-                    <h4 className="text-[10px] font-black uppercase tracking-widest text-purple-400">Assistant Voice & Call Intelligence</h4>
+                  {/* Today AI Cost */}
+                  <div className="bg-black/35 border border-white/5 rounded-2xl p-4 flex flex-col justify-between hover:border-white/15 transition-all min-w-0 overflow-hidden font-sans">
+                    <span className="text-[9px] font-black uppercase text-white/35 tracking-widest flex items-center gap-1.5 font-sans truncate" title="Today Cost">
+                      <DollarSign size={11} className="text-emerald-400 shrink-0" /> <span className="truncate">Today Cost</span>
+                    </span>
+                    <div className="mt-2.5 min-w-0">
+                      <span className="text-xl font-extrabold text-white block truncate" title={`$${globalStats.todayCost.toFixed(4)}`}>${globalStats.todayCost.toFixed(4)}</span>
+                      <p className="text-[8px] font-semibold text-white/20 uppercase tracking-wide mt-0.5 font-sans truncate">Estimated Spend</p>
+                    </div>
+                  </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {/* Voice Enabled Toggle */}
-                      <div className="flex items-center justify-between p-4 rounded-2xl bg-black/20">
+                  {/* Month AI Cost */}
+                  <div className="bg-black/35 border border-white/5 rounded-2xl p-4 flex flex-col justify-between hover:border-white/15 transition-all min-w-0 overflow-hidden font-sans">
+                    <span className="text-[9px] font-black uppercase text-white/35 tracking-widest flex items-center gap-1.5 font-sans truncate" title="Month Cost">
+                      <CreditCard size={11} className="text-purple-400 shrink-0" /> <span className="truncate">Month Cost</span>
+                    </span>
+                    <div className="mt-2.5 min-w-0">
+                      <span className="text-xl font-extrabold text-white block truncate" title={`$${globalStats.monthCost.toFixed(3)}`}>${globalStats.monthCost.toFixed(3)}</span>
+                      <p className="text-[8px] font-semibold text-white/20 uppercase tracking-wide mt-0.5 font-sans truncate">Accumulated Cost</p>
+                    </div>
+                  </div>
+
+                  {/* Last Run Cost */}
+                  <div className="bg-black/35 border border-white/5 rounded-2xl p-4 flex flex-col justify-between hover:border-white/11 transition-all min-w-0 overflow-hidden font-sans">
+                    <span className="text-[9px] font-black uppercase text-white/35 tracking-widest flex items-center gap-1.5 font-sans truncate" title="Last Run">
+                      <Clock size={11} className="text-amber-400 shrink-0" /> <span className="truncate">Last Run</span>
+                    </span>
+                    <div className="mt-2.5 min-w-0">
+                      <span className="text-xs font-bold text-white block truncate" title={globalStats.lastRunTime ? new Date(globalStats.lastRunTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Never'}>
+                        {globalStats.lastRunTime ? new Date(globalStats.lastRunTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Never'}
+                      </span>
+                      <span className="text-[8px] font-semibold text-white/35 uppercase tracking-wide font-sans block truncate" title={globalStats.lastRunCost > 0 ? `$${globalStats.lastRunCost.toFixed(5)}` : 'No payload'}>
+                        {globalStats.lastRunCost > 0 ? `$${globalStats.lastRunCost.toFixed(5)}` : 'No payload'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Local Ollama Status */}
+                  <div className="bg-black/35 border border-white/5 rounded-2xl p-4 flex flex-col justify-between hover:border-white/15 transition-all min-w-0 overflow-hidden font-sans">
+                    <span className="text-[9px] font-black uppercase text-white/35 tracking-widest flex items-center gap-1.5 font-sans truncate" title="Local Ollama">
+                      <Server size={11} className="text-sky-400 shrink-0" /> <span className="truncate">Local Ollama</span>
+                    </span>
+                    <div className="mt-2.5 flex items-center gap-1.5 min-w-0 overflow-hidden">
+                      <div className={cn(
+                        "w-2 h-2 rounded-full shrink-0",
+                        ollamaStatus === 'active' ? "bg-emerald-500 animate-pulse" :
+                        ollamaStatus === 'checking' ? "bg-amber-500 animate-spin border border-dashed border-white" : "bg-white/20"
+                      )} />
+                      <span className="text-xs font-bold uppercase tracking-wider text-white truncate" title={ollamaStatus === 'active' ? 'Active' : ollamaStatus === 'checking' ? 'Testing' : 'Offline'}>
+                        {ollamaStatus === 'active' ? 'Active' : ollamaStatus === 'checking' ? 'Testing' : 'Offline'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Cloud AI Status */}
+                  <div className="bg-black/35 border border-white/5 rounded-2xl p-4 flex flex-col justify-between hover:border-white/15 transition-all min-w-0 overflow-hidden font-sans">
+                    <span className="text-[9px] font-black uppercase text-white/35 tracking-widest flex items-center gap-1.5 truncate" title="Cloud AI Engine">
+                      <Cloud size={11} className="text-rose-400 shrink-0" /> <span className="truncate">Cloud AI Engine</span>
+                    </span>
+                    <div className="mt-2.5 flex items-center gap-1.5 min-w-0 overflow-hidden">
+                      <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                      <span className="text-xs font-bold uppercase tracking-wider text-white truncate text-ellipsis">Operational</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* TWO COLUMN GRID LAYOUT */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+                {/* SECTION 2: GLOBAL DEFAULTS FOR NEW AGENTS */}
+                <div className="p-6 rounded-[2rem] bg-white/5 border border-white/10 space-y-4 flex flex-col justify-between shadow-xl font-sans">
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-2 border-b border-white/5 pb-3">
+                      <Bot size={18} className="text-blue-400" />
+                      <div>
+                        <h4 className="text-xs font-black uppercase tracking-wider text-white">New Agent Blueprints</h4>
+                        <p className="text-[9px] text-white/40 uppercase tracking-widest font-bold mt-0.5">Used only for newly created agents.</p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      {/* Cloud Provider Default */}
+                      <div className="space-y-1 min-w-0">
+                        <label className="block text-[8px] font-black text-white/30 uppercase tracking-[0.2em] px-1 truncate" title="Blueprint Provider">Blueprint Provider</label>
+                        <select 
+                          className="w-full min-w-0 bg-black/45 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 transition-all font-bold truncate"
+                          value={defaultNewAgentProvider}
+                          onChange={(e) => {
+                            const p = e.target.value;
+                            setDefaultNewAgentProvider(p);
+                            if (p === 'gemini') {
+                              setAiSettings(prev => ({...prev, model_name: 'gemini-2.5-flash-lite'}));
+                            } else if (p === 'openai') {
+                              setAiSettings(prev => ({...prev, model_name: 'gpt-4o-mini'}));
+                            } else if (p === 'claude') {
+                              setAiSettings(prev => ({...prev, model_name: 'claude-3-5-sonnet'}));
+                            } else if (p === 'ollama') {
+                              setAiSettings(prev => ({...prev, model_name: 'gemma4:12b'}));
+                            }
+                          }}
+                        >
+                          <option value="gemini">Gemini Online</option>
+                          <option value="openai">OpenAI Online</option>
+                          <option value="claude">Claude Anthropic</option>
+                          <option value="ollama">Ollama Local</option>
+                        </select>
+                      </div>
+ 
+                      {/* Default Model */}
+                      <div className="space-y-1 min-w-0">
+                        <label className="block text-[8px] font-black text-white/30 uppercase tracking-[0.2em] px-1 truncate" title="Blueprint Model">Blueprint Model</label>
+                        <select 
+                          className="w-full min-w-0 bg-black/45 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 transition-all font-bold text-sans truncate"
+                          value={aiSettings.model_name}
+                          onChange={(e) => setAiSettings({...aiSettings, model_name: e.target.value})}
+                        >
+                          {defaultNewAgentProvider === 'gemini' && (
+                            <>
+                              <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+                              <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                              <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
+                            </>
+                          )}
+                          {defaultNewAgentProvider === 'openai' && (
+                            <>
+                              <option value="gpt-4o-mini">gpt-4o-mini</option>
+                              <option value="gpt-4o">gpt-4o</option>
+                            </>
+                          )}
+                          {defaultNewAgentProvider === 'claude' && (
+                            <>
+                              <option value="claude-3-5-sonnet">claude-3-5-sonnet</option>
+                              <option value="claude-3-5-haiku">claude-3-5-haiku</option>
+                            </>
+                          )}
+                          {defaultNewAgentProvider === 'ollama' && (
+                            <>
+                              <option value="gemma4:12b">Gemma 4 12B</option>
+                              <option value="qwen3:8b">Qwen 3 8B</option>
+                            </>
+                          )}
+                        </select>
+                      </div>
+                    </div>
+ 
+                    <div className="grid grid-cols-2 gap-4">
+                      {/* Default Temperature */}
+                      <div className="space-y-1.5 p-3 rounded-xl bg-black/25 border border-white/5 font-sans min-w-0 overflow-hidden">
+                        <div className="flex justify-between items-center px-1 font-sans gap-2 min-w-0">
+                          <label className="block text-[8px] font-black text-white/30 uppercase tracking-[0.2em] font-sans truncate" title="Blueprint Temp">Blueprint Temp</label>
+                          <span className="text-[10px] font-black text-blue-400 font-sans shrink-0">{aiSettings.temperature}</span>
+                        </div>
+                        <input 
+                          type="range"
+                          min="0"
+                          max="1.0"
+                          step="0.1"
+                          className="w-full accent-blue-500 h-1 bg-white/10 rounded-lg appearance-none cursor-pointer"
+                          value={aiSettings.temperature}
+                          onChange={(e) => setAiSettings({...aiSettings, temperature: parseFloat(e.target.value)})}
+                        />
+                      </div>
+ 
+                      {/* Default Call Mode */}
+                      <div className="flex items-center justify-between p-3 rounded-xl bg-black/25 border border-white/5 min-w-0 gap-2">
+                        <div className="min-w-0">
+                          <label className="block text-[8px] font-black text-white/40 uppercase tracking-widest mb-0.5 font-sans truncate" title="Call Mode">Call Mode</label>
+                          <p className="text-[8px] text-white/20 font-bold uppercase font-sans truncate" title="Spoken Call Defaults">Spoken Call Defaults</p>
+                        </div>
+                        <button 
+                          onClick={() => setDefaultNewAgentCallMode(!defaultNewAgentCallMode)}
+                          className={cn(
+                            "w-10 h-5.5 rounded-full relative transition-all duration-300 shrink-0",
+                            defaultNewAgentCallMode ? "bg-blue-500" : "bg-white/10"
+                          )}
+                        >
+                          <div className={cn(
+                            "absolute top-0.75 w-4 h-4 rounded-full bg-white transition-all duration-300",
+                            defaultNewAgentCallMode ? "right-1" : "left-1"
+                          )} />
+                        </button>
+                      </div>
+                    </div>
+ 
+                    <div className="grid grid-cols-2 gap-4">
+                      {/* Default Voice Provider */}
+                      <div className="space-y-1 min-w-0">
+                        <label className="block text-[8px] font-black text-white/30 uppercase tracking-[0.2em] px-1 truncate" title="Voice Provider Default">Voice Provider Default</label>
+                        <select 
+                          className="w-full min-w-0 bg-black/45 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 transition-all font-bold truncate"
+                          value={defaultNewAgentVoiceProvider}
+                          onChange={(e) => {
+                            const vp = e.target.value;
+                            setDefaultNewAgentVoiceProvider(vp);
+                            if (vp === 'google') setDefaultNewAgentVoiceName('en-US-Chirp3-HD-Aoede');
+                            if (vp === 'elevenlabs') setDefaultNewAgentVoiceName('21m00Tcm4TlvDq8iKC9e');
+                            if (vp === 'browser') setDefaultNewAgentVoiceName('default');
+                            if (vp === 'piper') setDefaultNewAgentVoiceName('en_US-amy-medium');
+                          }}
+                        >
+                          <option value="browser">Browser Speech</option>
+                          <option value="elevenlabs">ElevenLabs Cloud</option>
+                          <option value="google">Google Cloud TTS</option>
+                          <option value="piper">Piper Local TTS</option>
+                        </select>
+                      </div>
+ 
+                      {/* Default Voice Name */}
+                      <div className="space-y-1 min-w-0">
+                        <label className="block text-[8px] font-black text-white/30 uppercase tracking-[0.2em] px-1 truncate" title="Default Profile Voice">Default Profile Voice</label>
+                        <select 
+                          className="w-full min-w-0 bg-black/45 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 transition-all font-sans truncate"
+                          value={defaultNewAgentVoiceName}
+                          onChange={(e) => setDefaultNewAgentVoiceName(e.target.value)}
+                        >
+                          {FALLBACK_VOICES.filter(v => v.voice_provider === defaultNewAgentVoiceProvider).map(v => (
+                            <option key={v.id} value={v.voice_name}>{v.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="pt-3 border-t border-white/5 flex justify-between items-center text-[9px] font-bold text-white/20 uppercase tracking-widest font-sans gap-2 min-w-0">
+                    <span className="truncate">Template Blueprint Engine</span>
+                    <span className="text-white/30 truncate">Auto applied during generation</span>
+                  </div>
+                </div>
+
+                {/* SECTION 3: RUNTIME & FALLBACK */}
+                <div className="p-6 rounded-[2rem] bg-white/5 border border-white/10 space-y-4 flex flex-col justify-between shadow-xl font-sans">
+                  <div className="space-y-4 font-sans">
+                    <div className="flex items-center gap-2 border-b border-white/5 pb-3">
+                      <Zap size={18} className="text-amber-400" />
+                      <div>
+                        <h4 className="text-xs font-black uppercase tracking-wider text-white">Runtime & Fallback Policies</h4>
+                        <p className="text-[9px] text-white/40 uppercase tracking-widest font-bold mt-0.5">Control execution logic and mobile failovers</p>
+                      </div>
+                    </div>
+
+                    {/* Preferred Runtime */}
+                    <div className="space-y-1">
+                      <label className="block text-[8px] font-black text-white/30 uppercase tracking-[0.2em] px-1 font-sans truncate" title="Orchestration Priority">Orchestration Priority</label>
+                      <select 
+                        className="w-full min-w-0 bg-black/45 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500 transition-all font-bold truncate"
+                        value={preferredRuntimeBehavior}
+                        onChange={(e) => setPreferredRuntimeBehavior(e.target.value)}
+                      >
+                        <option value="cloud_first font-sans">Prefer Cloud (Highest Intelligence & Availability)</option>
+                        <option value="local_only font-sans">Force Local Ollama Run Only (Strict Isolation)</option>
+                        <option value="hybrid_routing font-sans">Hybrid Routing (Use Ollama; Fall back to cloud on timeouts)</option>
+                      </select>
+                    </div>
+ 
+                    <div className="grid grid-cols-2 gap-4 col-span-2">
+                      {/* Cloud Fallback on Mobile Switch */}
+                      <div className="flex items-center justify-between p-3 rounded-xl bg-black/25 border border-white/5 min-w-0 gap-2">
+                        <div className="min-w-0 pr-1">
+                          <label className="block text-[8px] font-black text-white/40 uppercase tracking-widest mb-0.5 font-sans truncate" title="Mobile Fallback">Mobile Fallback</label>
+                          <p className="text-[8px] text-white/20 font-bold uppercase leading-snug font-sans truncate" title="Redirect to Cloud on Mobile">Redirect to Cloud on Mobile</p>
+                        </div>
+                        <button 
+                          onClick={() => setCloudFallbackOnMobile(!cloudFallbackOnMobile)}
+                          className={cn(
+                            "w-10 h-5.5 rounded-full relative transition-all duration-300 shrink-0",
+                            cloudFallbackOnMobile ? "bg-amber-500" : "bg-white/10"
+                          )}
+                        >
+                          <div className={cn(
+                            "absolute top-0.75 w-4 h-4 rounded-full bg-white transition-all duration-300",
+                            cloudFallbackOnMobile ? "right-1" : "left-1"
+                          )} />
+                        </button>
+                      </div>
+ 
+                      {/* Ollama Local Only Switch */}
+                      <div className="flex items-center justify-between p-3 rounded-xl bg-black/25 border border-white/5 min-w-0 gap-2">
+                        <div className="min-w-0 pr-1">
+                          <label className="block text-[8px] font-black text-white/40 uppercase tracking-widest mb-0.5 font-sans truncate" title="Check Availability">Check Availability</label>
+                          <p className="text-[8px] text-white/20 font-bold uppercase leading-snug font-sans truncate" title="Only run Ollama if locally up">Only run Ollama if locally up</p>
+                        </div>
+                        <button 
+                          onClick={() => setOllamaLocalOnly(!ollamaLocalOnly)}
+                          className={cn(
+                            "w-10 h-5.5 rounded-full relative transition-all duration-300 shrink-0",
+                            ollamaLocalOnly ? "bg-amber-500" : "bg-white/10"
+                          )}
+                        >
+                          <div className={cn(
+                            "absolute top-0.75 w-4 h-4 rounded-full bg-white transition-all duration-300",
+                            ollamaLocalOnly ? "right-1" : "left-1"
+                          )} />
+                        </button>
+                      </div>
+                    </div>
+ 
+                    {/* Advanced Local Runtime subcard */}
+                    <div className="p-3 rounded-xl bg-black/35 border border-white/5 space-y-2 font-sans min-w-0 overflow-hidden">
+                      <div className="flex justify-between items-center font-sans gap-2 min-w-0">
+                        <span className="text-[8px] font-black uppercase text-white/40 tracking-wider truncate">Advanced Local Runtime Config</span>
+                        <span className="text-[8px] font-semibold text-amber-500 uppercase tracking-wider shrink-0">Ollama Core</span>
+                      </div>
+                      <div className="flex gap-2 min-w-0">
+                        <input 
+                          type="text"
+                          className="flex-1 min-w-0 bg-black/45 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 font-sans"
+                          placeholder="Http API endpoint url"
+                          value={aiSettings.ollama_endpoint}
+                          onChange={(e) => setAiSettings({...aiSettings, ollama_endpoint: e.target.value})}
+                        />
+                        <button 
+                          onClick={testConnection}
+                          className="px-3.5 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 active:scale-95 text-white/50 hover:text-white transition-all text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 font-sans shrink-0 truncate"
+                          title="Trigger Health Verification"
+                        >
+                          <Terminal size={12} className="shrink-0" /> Test
+                        </button>
+                      </div>
+                      {testResult && (
+                        <p className={cn(
+                          "text-[8px] font-bold uppercase tracking-widest px-1 font-sans truncate",
+                          testResult.includes('Connected') ? "text-emerald-400" : "text-amber-400"
+                        )} title={testResult}>
+                          {testResult}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="pt-3 border-t border-white/5 text-[9px] font-bold text-white/20 uppercase tracking-widest flex justify-between font-sans gap-2 min-w-0">
+                    <span className="truncate">Ollama Local Host Integration</span>
+                    <span className="text-white/30 truncate">OLLAMA_ORIGINS ALLOWED</span>
+                  </div>
+                </div>
+ 
+                {/* SECTION 4: COST & BUDGET CONTROL */}
+                <div className="p-6 rounded-[2rem] bg-white/5 border border-white/10 space-y-4 flex flex-col justify-between shadow-xl min-w-0 overflow-hidden">
+                  <div className="space-y-4 font-sans min-w-0">
+                    <div className="flex items-center gap-2 border-b border-white/5 pb-3 min-w-0">
+                      <Database size={18} className="text-emerald-400 shrink-0" />
+                      <div className="min-w-0">
+                        <h4 className="text-xs font-black uppercase tracking-wider text-white truncate" title="Quota & Budget Limits">Quota & Budget Limits</h4>
+                        <p className="text-[9px] text-white/40 uppercase tracking-widest font-bold mt-0.5 truncate" title="Deter catastrophic fee spikes using hard restrictions">Deter catastrophic fee spikes using hard restrictions</p>
+                      </div>
+                    </div>
+ 
+                    <div className="grid grid-cols-3 gap-2 font-sans">
+                      {/* Daily budget cap input */}
+                      <div className="space-y-1 p-2 rounded-xl bg-black/25 border border-white/5 min-w-0">
+                        <label className="block text-[8px] font-black text-white/35 uppercase tracking-wider truncate" title="Daily Cap">Daily Cap</label>
+                        <div className="relative font-mono flex items-center min-w-0">
+                          <span className="absolute left-1.5 text-[10px] text-white/30">$</span>
+                          <input 
+                            type="number"
+                            step="0.5"
+                            className="w-full bg-transparent pl-4 text-xs font-black text-white focus:outline-none font-sans min-w-0"
+                            value={budgetSettings.daily_budget_usd}
+                            onChange={(e) => setBudgetSettings({...budgetSettings, daily_budget_usd: parseFloat(e.target.value) || 0})}
+                          />
+                        </div>
+                      </div>
+ 
+                      {/* Monthly budget cap input */}
+                      <div className="space-y-1 p-2 rounded-xl bg-black/25 border border-white/5 font-sans min-w-0">
+                        <label className="block text-[8px] font-black text-white/35 uppercase tracking-wider truncate" title="Monthly Cap">Monthly Cap</label>
+                        <div className="relative flex items-center min-w-0 font-sans">
+                          <span className="absolute left-1.5 text-[10px] text-white/30">$</span>
+                          <input 
+                            type="number"
+                            step="5"
+                            className="w-full bg-transparent pl-4 text-xs font-black text-white focus:outline-none min-w-0"
+                            value={budgetSettings.monthly_budget_usd}
+                            onChange={(e) => setBudgetSettings({...budgetSettings, monthly_budget_usd: parseFloat(e.target.value) || 0})}
+                          />
+                        </div>
+                      </div>
+ 
+                      {/* Per-agent monthly budget cap input */}
+                      <div className="space-y-1 p-2 rounded-xl bg-black/25 border border-white/5 min-w-0">
+                        <label className="block text-[8px] font-black text-white/35 uppercase tracking-wider truncate" title="Per-Agent Cap">Per-Agent Cap</label>
+                        <div className="relative flex items-center min-w-0">
+                          <span className="absolute left-1.5 text-[10px] text-white/30">$</span>
+                          <input 
+                            type="number"
+                            step="1"
+                            className="w-full bg-transparent pl-4 text-xs font-black text-white focus:outline-none min-w-0"
+                            value={budgetSettings.per_agent_monthly_budget_usd}
+                            onChange={(e) => setBudgetSettings({...budgetSettings, per_agent_monthly_budget_usd: parseFloat(e.target.value) || 0})}
+                          />
+                        </div>
+                      </div>
+                    </div>
+ 
+                    <div className="grid grid-cols-2 gap-4">
+                      {/* Stop limits toggle */}
+                      <div className="flex items-center justify-between p-3 rounded-xl bg-black/25 border border-white/5 min-w-0 gap-2">
+                        <div className="min-w-0">
+                          <label className="block text-[8px] font-black text-white/40 uppercase tracking-widest mb-0.5 font-sans truncate" title="Stop on Limit">Stop on Limit</label>
+                          <p className="text-[8px] text-red-400 font-bold uppercase leading-snug truncate" title="Hard cut LLM/TTS actions">Hard cut LLM/TTS actions</p>
+                        </div>
+                        <button 
+                          onClick={() => setBudgetSettings({...budgetSettings, stop_on_limit: !budgetSettings.stop_on_limit})}
+                          className={cn(
+                            "w-10 h-5.5 rounded-full relative transition-all duration-300 shrink-0",
+                            budgetSettings.stop_on_limit ? "bg-red-500" : "bg-white/10"
+                          )}
+                        >
+                          <div className={cn(
+                            "absolute top-0.75 w-4 h-4 rounded-full bg-white transition-all duration-300",
+                            budgetSettings.stop_on_limit ? "right-1" : "left-1"
+                          )} />
+                        </button>
+                      </div>
+ 
+                      {/* Warning percentage slider */}
+                      <div className="space-y-1 p-2 rounded-xl bg-black/25 border border-white/5 font-sans min-w-0 overflow-hidden">
+                        <div className="flex justify-between items-center font-sans gap-2 min-w-0">
+                          <label className="block text-[8px] font-black text-white/45 uppercase tracking-widest font-sans truncate" title="Warning threshold">Warning threshold</label>
+                          <span className="text-[10px] font-black text-emerald-400 font-sans shrink-0">{budgetSettings.warn_threshold_percent}%</span>
+                        </div>
+                        <input 
+                          type="range"
+                          min="50"
+                          max="95"
+                          step="5"
+                          className="w-full accent-emerald-500 h-1 bg-white/10 rounded-lg appearance-none cursor-pointer"
+                          value={budgetSettings.warn_threshold_percent}
+                          onChange={(e) => setBudgetSettings({...budgetSettings, warn_threshold_percent: parseInt(e.target.value) || 80})}
+                        />
+                      </div>
+                    </div>
+ 
+                    {/* Spend indicator progress bar */}
+                    <div className="p-3.5 rounded-xl bg-black/30 border border-white/5 space-y-3 font-sans min-w-0 overflow-hidden">
+                      <div className="min-w-0">
+                        <div className="flex justify-between items-center text-[9px] font-black text-white/45 uppercase mb-1 gap-2 min-w-0">
+                          <span className="truncate">Month Spend Progress</span>
+                          <span className="shrink-0 font-mono">${globalStats.monthCost.toFixed(2)} / ${budgetSettings.monthly_budget_usd}</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
+                          <div 
+                            className={cn(
+                              "h-full rounded-full transition-all duration-300",
+                              (globalStats.monthCost / (budgetSettings.monthly_budget_usd || 1)) >= (budgetSettings.warn_threshold_percent/100) ? "bg-amber-500" : "bg-emerald-500"
+                            )} 
+                            style={{width: `${Math.min(100, (globalStats.monthCost / (budgetSettings.monthly_budget_usd || 1)) * 100)}%`}}
+                          />
+                        </div>
+                      </div>
+                      
+                      <button
+                        onClick={loadRecentTransactions}
+                        className="w-full py-2 bg-white/5 hover:bg-white/10 active:scale-95 border border-white/5 rounded-lg text-white font-extrabold text-[9px] uppercase tracking-wider transition-all text-center flex items-center justify-center gap-2"
+                      >
+                        <FileText size={12} /> Audit Direct AI Transaction Logs
+                      </button>
+                    </div>
+                  </div>
+                  <div className="pt-2 border-t border-white/5 flex justify-between items-center font-sans">
+                    <span className="text-[9px] font-bold text-white/20 uppercase tracking-widest">Pricing Guard Policies</span>
+                    <button 
+                      onClick={handleSaveBudget} 
+                      disabled={saveBudgetLoading} 
+                      className="text-[9px] font-black uppercase text-emerald-400 hover:text-emerald-300 tracking-widest pl-2 disabled:opacity-40"
+                    >
+                      {saveBudgetLoading ? 'Saving...' : 'Apply budget limits'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* SECTION 5: VOICE & CALL DEFAULTS */}
+                <div className="p-6 rounded-[2rem] bg-white/5 border border-white/10 space-y-4 flex flex-col justify-between shadow-xl">
+                  <div className="space-y-4 font-sans">
+                    <div className="flex items-center gap-2 border-b border-white/5 pb-3">
+                      <Volume2 size={18} className="text-purple-400" />
+                      <div>
+                        <h4 className="text-xs font-black uppercase tracking-wider text-white font-sans">Audio & Speech Defaults</h4>
+                        <p className="text-[9px] text-white/40 uppercase tracking-widest font-bold mt-0.5">Control auditory feedbacks, voices, and synthesized speech options</p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 col-span-2">
+                      {/* Enable voice by default */}
+                      <div className="flex items-center justify-between p-3 rounded-xl bg-black/25 border border-white/5">
                         <div>
-                          <h4 className="text-[10px] font-black uppercase tracking-widest text-white mb-1">Voice Feedback</h4>
-                          <p className="text-[9px] text-white/30 uppercase leading-relaxed font-bold">Have the assistant speak replies aloud.</p>
+                          <label className="block text-[8px] font-black text-white/40 uppercase tracking-widest mb-0.5 font-sans">Voice Feedback</label>
+                          <p className="text-[8px] text-white/20 font-bold uppercase font-sans">Synthesize responses aloud</p>
                         </div>
                         <button 
                           onClick={() => setVoiceEnabled(!voiceEnabled)}
                           className={cn(
-                            "w-12 h-6 rounded-full transition-all relative",
-                            voiceEnabled ? "bg-amber-500" : "bg-white/10"
+                            "w-10 h-5.5 rounded-full relative transition-all duration-300",
+                            voiceEnabled ? "bg-purple-500" : "bg-white/10"
                           )}
                         >
                           <div className={cn(
-                            "absolute top-1 w-4 h-4 rounded-full bg-white transition-all",
+                            "absolute top-0.75 w-4 h-4 rounded-full bg-white transition-all duration-300",
                             voiceEnabled ? "right-1" : "left-1"
                           )} />
                         </button>
                       </div>
 
-                      {/* Call Mode Toggle */}
-                      <div className="flex items-center justify-between p-4 rounded-2xl bg-black/20">
+                      {/* Enable call mode by default */}
+                      <div className="flex items-center justify-between p-3 rounded-xl bg-black/25 border border-white/5">
                         <div>
-                          <h4 className="text-[10px] font-black uppercase tracking-widest text-white mb-1">Call Mode</h4>
-                          <p className="text-[9px] text-white/30 uppercase leading-relaxed font-bold font-sans">Short, direct replies optimized for spoken live calls.</p>
+                          <label className="block text-[8px] font-black text-white/40 uppercase tracking-widest mb-0.5">Call Mode Default</label>
+                          <p className="text-[8px] text-white/20 font-bold uppercase font-sans">Optimized spoken outputs</p>
                         </div>
                         <button 
                           onClick={() => setCallModeEnabled(!callModeEnabled)}
                           className={cn(
-                            "w-12 h-6 rounded-full transition-all relative",
-                            callModeEnabled ? "bg-amber-500" : "bg-white/10"
+                            "w-10 h-5.5 rounded-full relative transition-all duration-300",
+                            callModeEnabled ? "bg-purple-500" : "bg-white/10"
                           )}
                         >
                           <div className={cn(
-                            "absolute top-1 w-4 h-4 rounded-full bg-white transition-all",
+                            "absolute top-0.75 w-4 h-4 rounded-full bg-white transition-all duration-300",
                             callModeEnabled ? "right-1" : "left-1"
                           )} />
                         </button>
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {/* Voice Provider Dropdown */}
-                      <div className="p-4 rounded-2xl bg-black/20">
-                        <label className="block text-[10px] font-bold text-white/30 uppercase tracking-[0.2em] mb-2 px-1">Voice Provider</label>
+                    {/* Default TTS Voice selection dropdown */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3 rounded-xl bg-black/25 border border-white/5 text-sans font-sans">
+                      <div className="space-y-1">
+                        <label className="block text-[8px] font-black text-white/30 uppercase tracking-widest">Global TTS System Option</label>
                         <select 
-                          className="w-full bg-black/40 border border-white/10 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-purple-500 transition-all font-bold"
+                          className="w-full bg-black/45 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-purple-500 transition-all font-bold text-center text-sans font-sans"
                           value={voiceProvider}
-                          onChange={(e) => setVoiceProvider(e.target.value as 'browser' | 'elevenlabs' | 'piper' | 'google')}
+                          onChange={(e) => setVoiceProvider(e.target.value as any)}
                         >
-                          <option value="browser" className="text-black">Browser Synth (Local Fallback)</option>
-                          <option value="elevenlabs" className="text-black">ElevenLabs Cloud Voice (Premium Option)</option>
-                          <option value="google" className="text-black">Google Cloud TTS (Premium Option)</option>
-                          <option value="piper" className="text-black">Piper Local TTS</option>
+                          <option value="browser">Browser Native Synth</option>
+                          <option value="elevenlabs">ElevenLabs Cloud</option>
+                          <option value="google">Google Cloud TTS</option>
+                          <option value="piper">Piper Local TTS</option>
                         </select>
                       </div>
-
-                      {/* Test premium voice button */}
-                      <div className="flex items-end">
+                      <div className="flex items-end font-sans">
                         <button
                           disabled={testingVoice || !voiceEnabled}
                           onClick={handleTestVoice}
-                          className="w-full h-12 flex items-center justify-center gap-2 rounded-2xl bg-purple-600 hover:bg-purple-500 active:scale-95 text-white text-[10px] font-black uppercase tracking-widest transition-all disabled:opacity-40"
-                          title={voiceEnabled ? "Synthesizes a test phrase" : "Enable voice feedback first to test"}
+                          className="w-full h-8.5 rounded-lg bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-[9px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-1.5"
+                          title={voiceEnabled ? "Test active voice synthesize" : "Activate voice system first"}
                         >
-                          <Volume2 size={16} />
-                          {testingVoice ? 'Synthesizing...' : voiceProvider === 'elevenlabs' ? 'Test ElevenLabs Voice' : voiceProvider === 'google' ? 'Test Google Cloud voice' : 'Test Local voice'}
+                          <Volume2 size={12} />
+                          {testingVoice ? 'Speaking...' : 'Test Speech'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="p-3 bg-purple-500/5 rounded-xl border border-purple-500/10 text-[8px] uppercase tracking-widest font-black leading-snug text-purple-300 flex items-start gap-2">
+                      <Info size={14} className="shrink-0 text-purple-400 mt-0.5" />
+                      <span>Warning: Voice feedbacks utilize intensive third-party resources. ElevenLabs and Google Cloud TTS charges apply to public endpoints.</span>
+                    </div>
+                  </div>
+                  <div className="pt-2 border-t border-white/5 text-[9px] font-bold text-white/20 uppercase tracking-widest flex justify-between">
+                    <span>Default TTS Speech parameters</span>
+                    <span>No active overriding</span>
+                  </div>
+                </div>
+
+                {/* SECTION 6: PRIVACY & SAFETY DEFAULTS */}
+                <div className="p-6 rounded-[2rem] bg-white/5 border border-white/10 space-y-4 shadow-xl lg:col-span-2">
+                  <div className="flex items-center gap-2 border-b border-white/5 pb-3">
+                    <ShieldCheck size={20} className="text-amber-500" />
+                    <div>
+                      <h4 className="text-xs font-black uppercase tracking-wider text-white">Trust, Safety & Privacy Rules</h4>
+                      <p className="text-[10px] text-white/40 uppercase tracking-widest font-semibold mt-0.5">Control context permissions, database alterations confirmation limits, and social posting gateways</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4.5 font-sans">
+                    {/* Pass sensitive context switch */}
+                    <div className="p-4 rounded-xl bg-black/25 border border-white/5 flex flex-col justify-between space-y-3 hover:border-white/10 transition-all">
+                      <div className="space-y-1">
+                        <label className="block text-[9px] font-black text-white uppercase tracking-wider">Pass Sensitive Context</label>
+                        <p className="text-[8px] text-white/30 uppercase leading-normal font-bold">Transmit calendar details, private annotations, and contact details to prompts</p>
+                      </div>
+                      <div className="flex items-center justify-between border-t border-white/5 pt-2">
+                        <span className="text-[8px] font-bold text-amber-500/80 uppercase">No Secret Keys Redacted</span>
+                        <button 
+                          onClick={() => setAiSettings({...aiSettings, allow_sensitive_context: !aiSettings.allow_sensitive_context})}
+                          className={cn(
+                            "w-10 h-5.5 rounded-full relative transition-all duration-300 shrink-0",
+                            aiSettings.allow_sensitive_context ? "bg-amber-500" : "bg-white/10"
+                          )}
+                        >
+                          <div className={cn(
+                            "absolute top-0.75 w-4 h-4 rounded-full bg-white transition-all duration-300",
+                            aiSettings.allow_sensitive_context ? "right-1" : "left-1"
+                          )} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* DB alterations confirmation */}
+                    <div className="p-4 rounded-xl bg-black/25 border border-white/5 flex flex-col justify-between space-y-3 hover:border-white/10 transition-all">
+                      <div className="space-y-1">
+                        <label className="block text-[9px] font-black text-white uppercase tracking-wider font-sans">DB Alterations Approval</label>
+                        <p className="text-[8px] text-white/30 uppercase leading-normal font-bold font-sans">Require explicit confirmation before creating, updating or deleting records</p>
+                      </div>
+                      <div className="flex items-center justify-between border-t border-white/5 pt-2">
+                        <span className="text-[8px] font-bold text-amber-500/80 uppercase font-sans">Strict Permissions</span>
+                        <button 
+                          onClick={() => setDefaultSafetyDbApproval(!defaultSafetyDbApproval)}
+                          className={cn(
+                            "w-10 h-5.5 rounded-full relative transition-all duration-300 shrink-0",
+                            defaultSafetyDbApproval ? "bg-amber-500" : "bg-white/10"
+                          )}
+                        >
+                          <div className={cn(
+                            "absolute top-0.75 w-4 h-4 rounded-full bg-white transition-all duration-300",
+                            defaultSafetyDbApproval ? "right-1" : "left-1"
+                          )} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Social/Publishing approval */}
+                    <div className="p-4 rounded-xl bg-black/25 border border-white/5 flex flex-col justify-between space-y-3 hover:border-white/10 transition-all text-sans">
+                      <div className="space-y-1">
+                        <label className="block text-[9px] font-black text-white uppercase tracking-wider">Communication Gateway</label>
+                        <p className="text-[8px] text-white/30 uppercase leading-normal font-bold">Require human checks before broadcasting social media status updates or posts</p>
+                      </div>
+                      <div className="flex items-center justify-between border-t border-white/5 pt-2">
+                        <span className="text-[8px] font-bold text-amber-500/80 uppercase">Social Posting</span>
+                        <button 
+                          onClick={() => setDefaultSafetyPublishApproval(!defaultSafetyPublishApproval)}
+                          className={cn(
+                            "w-10 h-5.5 rounded-full relative transition-all duration-300 shrink-0",
+                            defaultSafetyPublishApproval ? "bg-amber-500" : "bg-white/10"
+                          )}
+                        >
+                          <div className={cn(
+                            "absolute top-0.75 w-4 h-4 rounded-full bg-white transition-all duration-300",
+                            defaultSafetyPublishApproval ? "right-1" : "left-1"
+                          )} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Messaging approval */}
+                    <div className="p-4 rounded-xl bg-black/25 border border-white/5 flex flex-col justify-between space-y-3 hover:border-white/10 transition-all font-sans">
+                      <div className="space-y-1">
+                        <label className="block text-[9px] font-black text-white uppercase tracking-wider">SMS & Mail gateway</label>
+                        <p className="text-[8px] text-white/30 uppercase leading-normal font-bold">Require human approval before sending outgoing messages, emails and SMS dispatches</p>
+                      </div>
+                      <div className="flex items-center justify-between border-t border-white/5 pt-2 font-sans">
+                        <span className="text-[8px] font-bold text-amber-500/80 uppercase">Dispatches</span>
+                        <button 
+                          onClick={() => setDefaultSafetyMessagingApproval(!defaultSafetyMessagingApproval)}
+                          className={cn(
+                            "w-10 h-5.5 rounded-full relative transition-all duration-300 shrink-0",
+                            defaultSafetyMessagingApproval ? "bg-amber-500" : "bg-white/10"
+                          )}
+                        >
+                          <div className={cn(
+                            "absolute top-0.75 w-4 h-4 rounded-full bg-white transition-all duration-300",
+                            defaultSafetyMessagingApproval ? "right-1" : "left-1"
+                          )} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Allow recollection of preferences */}
+                    <div className="p-4 rounded-xl bg-black/25 border border-white/5 flex flex-col justify-between space-y-3 hover:border-white/10 transition-all text-sans animate-none">
+                      <div className="space-y-1">
+                        <label className="block text-[9px] font-black text-white uppercase tracking-wider">Cognitive Preferences Memory</label>
+                        <p className="text-[8px] text-white/30 uppercase leading-normal font-bold">Allow agents to record and retrieve custom likes and persistent user insights</p>
+                      </div>
+                      <div className="flex items-center justify-between border-t border-white/5 pt-2">
+                        <span className="text-[8px] font-bold text-amber-500/80 uppercase">Long-term Memory</span>
+                        <button 
+                          onClick={() => setDefaultSafetyRememberPrefs(!defaultSafetyRememberPrefs)}
+                          className={cn(
+                            "w-10 h-5.5 rounded-full relative transition-all duration-300 shrink-0 font-sans",
+                            defaultSafetyRememberPrefs ? "bg-amber-500" : "bg-white/10"
+                          )}
+                        >
+                          <div className={cn(
+                            "absolute top-0.75 w-4 h-4 rounded-full bg-white transition-all duration-300",
+                            defaultSafetyRememberPrefs ? "right-1" : "left-1"
+                          )} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Allow automatic session compression / summarization */}
+                    <div className="p-4 rounded-xl bg-black/25 border border-white/5 flex flex-col justify-between space-y-3 hover:border-white/10 transition-all font-sans">
+                      <div className="space-y-1 font-sans">
+                        <label className="block text-[9px] font-black text-white uppercase tracking-wider">History Summarization</label>
+                        <p className="text-[8px] text-white/30 uppercase leading-normal font-bold font-sans">Permit automatic conversation history compression and token-saving pruning</p>
+                      </div>
+                      <div className="flex items-center justify-between border-t border-white/5 pt-2">
+                        <span className="text-[8px] font-bold text-amber-500/80 uppercase">Cognitive Compression</span>
+                        <button 
+                          onClick={() => setDefaultSafetySummarizeConvos(!defaultSafetySummarizeConvos)}
+                          className={cn(
+                            "w-10 h-5.5 rounded-full relative transition-all duration-300 shrink-0",
+                            defaultSafetySummarizeConvos ? "bg-amber-500" : "bg-white/10"
+                          )}
+                        >
+                          <div className={cn(
+                            "absolute top-0.75 w-4 h-4 rounded-full bg-white transition-all duration-300",
+                            defaultSafetySummarizeConvos ? "right-1" : "left-1"
+                          )} />
                         </button>
                       </div>
                     </div>
                   </div>
                 </div>
+
+                {/* SECTION 7: DIAGNOSTIC MAINTENANCE PANEL */}
+                <div className="p-6 rounded-[2rem] bg-white/5 border border-white/10 space-y-4 shadow-xl lg:col-span-2">
+                  <div className="flex items-center gap-2 border-b border-white/5 pb-3 font-sans">
+                    <Activity size={20} className="text-purple-400" />
+                    <div>
+                      <h4 className="text-xs font-black uppercase tracking-wider text-white font-sans">Maintenance & Diagnostics System</h4>
+                      <p className="text-[10px] text-white/40 uppercase tracking-widest font-semibold mt-0.5">Diagnose core communication databases, repair caches, and recalculate limits counters</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 font-sans">
+                    {/* Refresh health check state */}
+                    <button 
+                      onClick={async () => {
+                        setOllamaStatus('checking');
+                        try {
+                          const models = await testOllamaConnection(aiSettings.ollama_endpoint || 'http://localhost:11434/api/generate');
+                          if (models && models.length > 0) {
+                            setOllamaStatus('active');
+                            showToast.success(`Local host responsive. Standard models: ${models.join(', ')}`);
+                          } else {
+                            setOllamaStatus('inactive');
+                            showToast.error("Connection failed. Local server has not responded yet.");
+                          }
+                        } catch (e: any) {
+                          setOllamaStatus('inactive');
+                          showToast.error("Tested server offline: " + e.message);
+                        }
+                      }}
+                      className="p-4 rounded-xl bg-black/20 border border-white/5 hover:border-purple-500/30 text-left transition-all active:scale-95 hover:bg-white/[0.02] flex flex-col justify-between space-y-3 flex-1 font-sans"
+                    >
+                      <div className="p-2 w-8 h-8 rounded-lg bg-sky-500/10 text-sky-400 flex items-center justify-center">
+                        <RefreshCw size={14} className={cn(ollamaStatus === 'checking' && "animate-spin")} />
+                      </div>
+                      <div>
+                        <span className="text-[10px] font-black uppercase text-white block">Refresh AI Health</span>
+                        <p className="text-[8px] text-white/30 uppercase mt-0.5 leading-snug">Poll Ollama models and verify remote keys integrity</p>
+                      </div>
+                    </button>
+
+                    {/* Clear Temporary Cache button */}
+                    <button 
+                      onClick={handleClearCache}
+                      className="p-4 rounded-xl bg-black/20 border border-white/5 hover:border-purple-500/30 text-left transition-all active:scale-95 hover:bg-white/[0.02] flex flex-col justify-between space-y-3 flex-1 font-sans"
+                    >
+                      <div className="p-2 w-8 h-8 rounded-lg bg-orange-500/10 text-orange-400 flex items-center justify-center">
+                        <Trash2 size={14} />
+                      </div>
+                      <div>
+                        <span className="text-[10px] font-black uppercase text-white block font-sans">Wipe Local Cache</span>
+                        <p className="text-[8px] text-white/30 uppercase mt-0.5 leading-snug font-sans">Wipe client context caches and reload pristine models weights</p>
+                      </div>
+                    </button>
+
+                    {/* Recount event events usage stats */}
+                    <button 
+                      onClick={handleRecalculateUsage}
+                      disabled={recalculatingLogs}
+                      className="p-4 rounded-xl bg-black/20 border border-white/5 hover:border-purple-500/30 text-left transition-all active:scale-95 hover:bg-white/[0.02] flex flex-col justify-between space-y-3 flex-1 disabled:opacity-40"
+                    >
+                      <div className="p-2 w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
+                        {recalculatingLogs ? <Loader2 size={14} className="animate-spin" /> : <Database size={14} />}
+                      </div>
+                      <div>
+                        <span className="text-[10px] font-black uppercase text-white block font-sans">Recalculate Usage</span>
+                        <p className="text-[8px] text-white/30 uppercase mt-0.5 leading-snug">Run absolute recount of monthly estimated ledger events</p>
+                      </div>
+                    </button>
+
+                    {/* View recent errors and issues inspect failures */}
+                    <button 
+                      onClick={handleInspectFailures}
+                      className="p-4 rounded-xl bg-black/20 border border-white/5 hover:border-purple-500/30 text-left transition-all active:scale-95 hover:bg-white/[0.02] flex flex-col justify-between space-y-3 flex-1"
+                    >
+                      <div className="p-2 w-8 h-8 rounded-lg bg-rose-500/10 text-rose-400 flex items-center justify-center font-sans">
+                        <ShieldAlert size={14} />
+                      </div>
+                      <div>
+                        <span className="text-[10px] font-black uppercase text-white block font-sans">Trace AI Errors</span>
+                        <p className="text-[8px] text-white/30 uppercase mt-0.5 leading-snug">Compile recent tracing reports to address failed LLM connections</p>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+
               </div>
+
+              {/* TRANSACTIONS HISTORICAL LOGS DRAW OVERLAY INLINE MODAL */}
+              {showLogsModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center px-4 backdrop-blur-md bg-black/60 animate-in fade-in duration-300">
+                  <div className="w-full max-w-2xl bg-slate-900 border border-white/10 rounded-[2.5rem] p-6 shadow-2xl space-y-4">
+                    <div className="flex justify-between items-center border-b border-white/5 pb-3 font-sans">
+                      <div>
+                        <h4 className="font-extrabold text-sm uppercase text-white tracking-wider flex items-center gap-2">
+                          <FileText size={16} className="text-purple-400" /> AI Transaction Ledger Trace
+                        </h4>
+                        <p className="text-[9px] text-white/40 uppercase tracking-widest mt-0.5">Most recent 25 calls logged by agent networks and speakers</p>
+                      </div>
+                      <button 
+                        onClick={() => setShowLogsModal(false)}
+                        className="px-3.5 py-1 text-[9px] font-bold uppercase tracking-widest text-white/40 border border-white/10 hover:border-white/20 rounded-full hover:text-white transition-all font-sans"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+
+                    <div className="max-h-[350px] overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                      {logsLoading ? (
+                        <div className="py-12 text-center text-xs text-white/30 flex items-center justify-center gap-2 font-sans">
+                          <Loader2 size={16} className="animate-spin text-purple-400" />
+                          <span>Polling ledger data...</span>
+                        </div>
+                      ) : recentTransactionLogs.length === 0 ? (
+                        <div className="py-12 text-center text-xs text-white/30 font-sans">
+                          No logged AI transaction records found in the ledger. Check server access.
+                        </div>
+                      ) : (
+                        recentTransactionLogs.map((log) => {
+                          const hasError = log.estimated_cost_usd === 0 && log.total_tokens === 0;
+                          return (
+                            <div key={log.id} className={cn(
+                              "p-3 rounded-xl flex items-center justify-between text-xs transition-all border font-mono",
+                              hasError ? "bg-red-500/5 hover:bg-red-500/10 border-red-500/10" : "bg-black/30 hover:bg-black/40 border-white/5"
+                            )}>
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-2">
+                                  <span className={cn(
+                                    "text-[9px] font-bold uppercase px-1.5 py-0.25 rounded-md",
+                                    log.operation_type === 'chat' ? "bg-purple-950 text-purple-400 border border-purple-500/10" : "bg-sky-950 text-sky-400 border border-sky-500/10"
+                                  )}>
+                                    {log.operation_type || 'Unknown'}
+                                  </span>
+                                  <span className="text-white/40 text-[9px] font-sans">
+                                    {new Date(log.created_at).toLocaleString()}
+                                  </span>
+                                </div>
+                                <div className="text-[10px] font-sans text-white/70 font-sans">
+                                  Agent ID: <span className="font-mono text-purple-300 text-[9px]">{log.agent_id ? String(log.agent_id).slice(0, 8) : 'Global / Direct'}</span> 
+                                  {log.model_name && ` • Model: ${log.model_name}`}
+                                </div>
+                              </div>
+                              <div className="text-right">
+                                <p className={cn("font-bold text-xs font-mono", hasError ? "text-red-400" : "text-emerald-400")}>
+                                  {hasError ? "FAILED" : `$${Number(log.estimated_cost_usd || 0).toFixed(4)}`}
+                                </p>
+                                <p className="text-[8px] text-white/30 uppercase mt-0.5 font-sans">
+                                  {log.total_tokens ? `${log.total_tokens} tokens font-sans` : '0 tokens'}
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -885,7 +1947,7 @@ export default function Settings() {
                       <input 
                         type="text" 
                         className="w-full bg-black/40 border border-white/10 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-amber-500 transition-all font-bold"
-                        placeholder="e.g. gemini-2.5-flash-lite, gpt-4.1-mini, or llama3:latest"
+                        placeholder="e.g. gemini-2.5-flash-lite, gpt-4.1-mini, or gemma4:12b"
                         value={editingAgent.model_name || ''}
                         onChange={(e) => setEditingAgent({ ...editingAgent, model_name: e.target.value })}
                       />
@@ -1173,34 +2235,34 @@ export default function Settings() {
                       <div 
                         key={agent.id}
                         className={cn(
-                          "p-5 rounded-2xl border transition-all space-y-3",
+                          "p-5 rounded-2xl border transition-all space-y-3 min-w-0 overflow-hidden",
                           isCurrentlyActive 
                             ? "bg-amber-500/10 border-amber-500/30" 
                             : "bg-black/20 border-white/5 hover:border-white/10"
                         )}
                       >
-                        <div className="flex items-start justify-between">
-                          <div>
+                        <div className="flex items-start justify-between gap-4 min-w-0">
+                          <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-sm font-black text-white">{agent.name}</span>
-                              <span className="text-[9px] font-bold text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full uppercase">
+                              <span className="text-sm font-black text-white truncate max-w-[240px]" title={agent.name}>{agent.name}</span>
+                              <span className="text-[9px] font-bold text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full uppercase shrink-0">
                                 {agent.role.replace('_', ' ')}
                               </span>
                               {agent.is_default && (
-                                <span className="text-[8px] font-black text-black bg-amber-400 px-1.5 py-0.5 rounded uppercase tracking-wider">
+                                <span className="text-[8px] font-black text-black bg-amber-400 px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0">
                                   Default
                                 </span>
                               )}
                               {isCurrentlyActive && (
-                                <span className="text-[8px] font-black text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-1.5 py-0.5 rounded uppercase tracking-wider">
+                                <span className="text-[8px] font-black text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0">
                                   Active Conversation
                                 </span>
                               )}
                             </div>
-                            <p className="text-white/60 text-xs mt-1 font-sans">{agent.description || 'No description provided.'}</p>
+                            <p className="text-white/60 text-xs mt-1 font-sans break-words">{agent.description || 'No description provided.'}</p>
                           </div>
-
-                          <div className="flex items-center gap-2">
+ 
+                          <div className="flex items-center gap-2 shrink-0">
                             <button
                               type="button"
                               onClick={() => {
@@ -1210,7 +2272,7 @@ export default function Settings() {
                                   agentFormRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
                                 }, 100);
                               }}
-                              className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-white/60 hover:text-white transition-all"
+                              className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-white/60 hover:text-white transition-all shrink-0"
                               title="Edit Agent"
                             >
                               <Edit3 size={14} />
@@ -1218,23 +2280,79 @@ export default function Settings() {
                             <button
                               type="button"
                               onClick={() => handleDeleteAgent(agent.id)}
-                              className="p-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 transition-all"
+                              className="p-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 transition-all shrink-0"
                               title="Delete Agent"
                             >
                               <Trash2 size={14} />
                             </button>
                           </div>
                         </div>
-
-                        <div className="flex flex-wrap items-center gap-2 text-[10px] text-white/40 border-t border-white/5 pt-3">
-                          <span className="font-bold">Model: {agent.model_provider} ({agent.model_name})</span>
-                          <span className="text-white/10">•</span>
-                          <span className="font-bold">Voice: {agent.voice_provider}</span>
-                          <span className="text-white/10">•</span>
-                          <span className="font-bold">Tools: {agent.enabled_tools.slice(0, 3).join(', ')}{agent.enabled_tools.length > 3 ? '...' : ''}</span>
+ 
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-white/40 border-t border-white/5 pt-3 min-w-0">
+                          <span className="font-bold truncate max-w-full" title={`${agent.model_provider} (${agent.model_name})`}>Model: {agent.model_provider} ({agent.model_name})</span>
+                          <span className="text-white/10 shrink-0">•</span>
+                          <span className="font-bold truncate max-w-full" title={agent.voice_provider || undefined}>Voice: {agent.voice_provider}</span>
+                          <span className="text-white/10 shrink-0">•</span>
+                          <span className="font-bold truncate max-w-full" title={agent.enabled_tools.join(', ')}>Tools: {agent.enabled_tools.slice(0, 3).join(', ')}{agent.enabled_tools.length > 3 ? '...' : ''}</span>
                         </div>
+ 
+                        {/* Metric Granular Usage Grid */}
+                        {(() => {
+                          const s = agentStats[agent.id] || {
+                            todayTokens: 0,
+                            monthTokens: 0,
+                            todayCost: 0,
+                            monthCost: 0,
+                            msgCount: 0,
+                            totalChatCost: 0,
+                            lastRunCost: 0
+                          };
+                          const avgMsgCost = s.msgCount > 0 ? (s.totalChatCost / s.msgCount) : 0;
+ 
+                          return (
+                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 pt-3 border-t border-white/5">
+                              <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 flex flex-col min-w-0 overflow-hidden" title={s.todayTokens.toLocaleString()}>
+                                <span className="text-[8px] font-bold text-white/30 uppercase tracking-wider truncate">Today Tokens</span>
+                                <span className="text-xs font-black text-white mt-1 truncate">{s.todayTokens.toLocaleString()}</span>
+                              </div>
+                              <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 flex flex-col min-w-0 overflow-hidden" title={s.monthTokens.toLocaleString()}>
+                                <span className="text-[8px] font-bold text-white/30 uppercase tracking-wider truncate">Month Tokens</span>
+                                <span className="text-xs font-black text-white mt-1 truncate">{s.monthTokens.toLocaleString()}</span>
+                              </div>
+                              <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 flex flex-col min-w-0 overflow-hidden" title={`$${s.todayCost.toFixed(5)}`}>
+                                <span className="text-[8px] font-bold text-white/30 uppercase tracking-wider truncate">Today Cost</span>
+                                <span className="text-xs font-black text-amber-400 mt-1 truncate">${s.todayCost.toFixed(5)}</span>
+                              </div>
+                              <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 flex flex-col min-w-0 overflow-hidden" title={`$${s.monthCost.toFixed(4)}`}>
+                                <span className="text-[8px] font-bold text-white/30 uppercase tracking-wider truncate">Month Cost</span>
+                                <span className="text-xs font-black text-amber-400 mt-1 truncate">${s.monthCost.toFixed(4)}</span>
+                              </div>
+                              <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 flex flex-col min-w-0 overflow-hidden" title={`$${avgMsgCost.toFixed(5)}`}>
+                                <span className="text-[8px] font-bold text-white/30 uppercase tracking-wider truncate">Avg Msg Cost</span>
+                                <span className="text-xs font-black text-teal-400 mt-1 truncate">${avgMsgCost.toFixed(5)}</span>
+                              </div>
+                              <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 flex flex-col min-w-0 overflow-hidden" title={`$${s.lastRunCost.toFixed(5)}`}>
+                                <span className="text-[8px] font-bold text-white/30 uppercase tracking-wider truncate">Last Run Cost</span>
+                                <span className="text-xs font-black text-indigo-400 mt-1 truncate">${s.lastRunCost.toFixed(5)}</span>
+                              </div>
+                            </div>
+                          );
+                        })()}
 
                         <div className="flex items-center gap-2 pt-2 justify-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setActiveAgentId(agent.id);
+                              setVoiceEnabled(true);
+                              setCallModeEnabled(true);
+                              navigate(`/assistant?call=1&agent=${agent.id}`);
+                            }}
+                            className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5"
+                          >
+                            <Phone size={12} />
+                            Call
+                          </button>
                           {!isCurrentlyActive && (
                             <button
                               type="button"

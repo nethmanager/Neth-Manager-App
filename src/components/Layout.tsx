@@ -25,9 +25,9 @@ export default function Layout() {
   return (
     <div className="flex h-[100dvh] overflow-hidden bg-slate-950 text-slate-50 font-sans selection:bg-blue-500/30">
       {/* Desktop Sidebar (lg+) */}
-      <div className="hidden lg:block shrink-0">
-        <Sidebar />
-      </div>
+      <div className="hidden lg:block fixed left-0 top-0 bottom-0 z-50 w-72">
+  <Sidebar />
+</div>
 
       {/* Mobile Drawer Overlay */}
       {isMobileMenuOpen && (
@@ -52,7 +52,7 @@ export default function Layout() {
                 <X size={20} />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto">
+            <div className="flex-1 min-h-0">
               <Sidebar onClose={() => setIsMobileMenuOpen(false)} />
             </div>
           </div>
@@ -60,8 +60,8 @@ export default function Layout() {
       )}
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col h-full overflow-hidden">
-        {/* Mobile Top Bar */}
+      <div className="flex-1 flex flex-col h-full overflow-hidden lg:pl-72">
+  {/* Mobile Top Bar */}
         <header className="lg:hidden h-16 bg-slate-950 border-b border-white/5 flex items-center justify-between px-4 shrink-0 z-40">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
@@ -82,12 +82,12 @@ export default function Layout() {
         </header>
 
         <main
-  className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 sm:p-6 lg:p-10"
-  style={{
-    paddingBottom: 'calc(var(--ai-footer-height, 72px) + var(--ai-footer-expanded-height, 0px) + env(safe-area-inset-bottom, 0px) + 4rem)'
-  }}
->
-          <div className="max-w-7xl mx-auto">
+          className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-3.5 sm:p-5 lg:p-8"
+          style={{
+            paddingBottom: 'calc(var(--ai-footer-height, 72px) + var(--ai-footer-expanded-height, 0px) + env(safe-area-inset-bottom, 0px) + 4rem)'
+          }}
+        >
+          <div className="max-w-[1536px] w-[95vw] lg:w-full mx-auto">
             <Outlet />
           </div>
         </main>
