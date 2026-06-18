@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { cn } from '../lib/utils';
 import { useOllamaAssistant } from '../hooks/useOllamaAssistant';
 import { useUI } from '../contexts/UIContext';
+import { supabase } from '../lib/supabaseClient';
 
 function CallWaveform({ active, thinking }: { active: boolean; thinking: boolean }) {
   return (
@@ -38,6 +39,7 @@ export default function AIAssistantPage() {
 
   const {
     messages,
+    setMessages,
     loading,
     aiSettings,
     dbContext,
@@ -60,8 +62,112 @@ export default function AIAssistantPage() {
     activeAgent,
     setActiveAgentId,
     pendingActions,
-    resolvePendingAction
+    resolvingActionIds,
+    resolvePendingAction,
+    refreshPendingActions
   } = useOllamaAssistant();
+
+  const [pendingAgentTasks, setPendingAgentTasks] = useState<any[]>([]);
+  const [runningTaskIds, setRunningTaskIds] = useState<string[]>([]);
+
+  const fetchPendingTasks = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      
+      const { data: tasks, error } = await supabase
+        .from('agent_tasks')
+        .select(`
+          *,
+          assigned_agent:ai_agents!assigned_agent_id(name, role)
+        `)
+        .in('status', ['pending', 'queued'])
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+        
+      if (!error && tasks) {
+        setPendingAgentTasks(tasks);
+      }
+    } catch (e) {
+      console.warn("Error fetching pending agent tasks:", e);
+    }
+  };
+
+  useEffect(() => {
+    fetchPendingTasks();
+    const interval = setInterval(fetchPendingTasks, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleRunSpecialist = async (task: any) => {
+    if (runningTaskIds.includes(task.id)) return;
+    setRunningTaskIds(prev => [...prev, task.id]);
+    
+    const specialistName = task.assigned_agent?.name || "Specialist";
+    showToast.success(`Starting ${specialistName} background run...`);
+
+    // Immediately append a chat message like "{specialistName} is working on it..."
+    setMessages(prev => [
+      ...prev,
+      { role: 'assistant' as const, content: `${specialistName} is working on it...` }
+    ]);
+    
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const activeId = activeAgent?.id || 'default_conversation';
+      const currentConvId = localStorage.getItem(`ai_conversation_id_${activeId}`);
+
+      const res = await fetch("/api/assistant/agent-task/process", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session?.access_token}`
+        },
+        body: JSON.stringify({
+          agent_task_id: task.id,
+          conversation_id: currentConvId || undefined
+        })
+      });
+      const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to process specialist agent task.");
+      }
+      
+      // Append returned timeline_messages
+      if (data.timeline_messages && Array.isArray(data.timeline_messages)) {
+        setMessages(prev => [
+          ...prev,
+          ...data.timeline_messages.map((m: string) => ({ role: 'assistant' as const, content: m }))
+        ]);
+      }
+      
+      // If action is created, immediately refresh pending actions list
+      if (data.action_created) {
+        await refreshPendingActions();
+      }
+
+      // If pending action exists, show a confirmation message
+      if (data.pending_action) {
+        setMessages(prev => [
+          ...prev,
+          { role: 'assistant' as const, content: `${specialistName} prepared an action. Confirm it below.` }
+        ]);
+        showToast.success(`${specialistName} prepared an action!`);
+      } else {
+        showToast.success(`Specialist task processed successfully!`);
+      }
+      
+      // Immediately refresh tasks list
+      fetchPendingTasks();
+    } catch (err: any) {
+      console.error("Run Specialist error:", err);
+      showToast.error(err.message || "Failed running specialist task.");
+      fetchPendingTasks();
+    } finally {
+      setRunningTaskIds(prev => prev.filter(id => id !== task.id));
+    }
+  };
 
   const hasAutoStartedCallRef = useRef(false);
 
@@ -501,9 +607,9 @@ export default function AIAssistantPage() {
   }
 
   return (
-    <div className="max-w-6xl mx-auto flex-1 flex flex-col min-h-[600px] bg-slate-950/50 border border-white/10 rounded-[2rem] overflow-hidden shadow-2xl backdrop-blur-sm">
+    <div className="w-full max-w-6xl mx-auto flex flex-col h-[calc(100vh-var(--ai-footer-height,72px)-var(--ai-footer-expanded-height,0px)-7rem)] min-h-[520px] max-h-[calc(100vh-var(--ai-footer-height,72px)-var(--ai-footer-expanded-height,0px)-7rem)] bg-slate-950/50 border border-white/10 rounded-[2rem] overflow-hidden shadow-2xl backdrop-blur-sm">
       {/* Header */}
-      <div className="p-4 md:p-5 flex flex-col xl:flex-row xl:items-center justify-between gap-4 border-b border-white/5 bg-white/[0.02]">
+      <div className="p-4 md:p-5 shrink-0 flex flex-col xl:flex-row xl:items-center justify-between gap-4 border-b border-white/5 bg-white/[0.02]">
         <div className="flex items-center gap-4 min-w-0 w-full xl:w-auto">
           <button 
             onClick={() => navigate(-1)}
@@ -640,7 +746,7 @@ export default function AIAssistantPage() {
 
       {/* Context Alert if errored */}
       {contextErrors.length > 0 && !isCtxLoading && (
-        <div className="mx-8 mb-4 p-4 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-between">
+        <div className="mx-8 mt-4 p-4 shrink-0 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-between">
           <div className="flex items-center gap-3 text-red-500">
             <AlertCircle size={18} />
             <div>
@@ -655,7 +761,7 @@ export default function AIAssistantPage() {
       )}
 
       {/* Main Chat Area */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 no-scrollbar">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6 space-y-4 no-scrollbar">
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-center max-w-md mx-auto opacity-40 py-8">
             <div className="w-16 h-16 rounded-full bg-blue-500/5 flex items-center justify-center mb-6 border border-blue-500/10">
@@ -710,8 +816,54 @@ export default function AIAssistantPage() {
         )}
       </div>
 
+      {pendingAgentTasks.length > 0 && (
+        <div className="mx-4 md:mx-6 mb-2 p-4 shrink-0 rounded-3xl bg-blue-500/5 border border-blue-500/20 space-y-3 shadow-lg animate-in fade-in duration-300">
+          <div className="flex items-center justify-between border-b border-white/5 pb-2">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+              <h4 className="text-[10px] font-black uppercase text-blue-400 tracking-[0.2em]">Delegated Specialist Tasks</h4>
+            </div>
+            <span className="text-[8px] font-mono text-white/30 uppercase tracking-wider">
+              {pendingAgentTasks.length} Pending Run
+            </span>
+          </div>
+          <div className="max-h-40 overflow-y-auto space-y-2 pr-1 no-scrollbar">
+            {pendingAgentTasks.map((task) => {
+              const specialistName = task.assigned_agent?.name || "Specialist";
+              const specialistRole = task.assigned_agent?.role || "Agent";
+              const isRunning = runningTaskIds.includes(task.id);
+              return (
+                <div key={task.id} className="p-3 rounded-2xl bg-black/40 border border-white/5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 group hover:border-white/10 transition-all">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap text-[9px] font-black tracking-widest text-white/40 uppercase">
+                      <span className="text-blue-400">{specialistName}</span>
+                      <span>•</span>
+                      <span className="text-white/60">{specialistRole}</span>
+                    </div>
+                    <p className="text-xs text-white/90 font-medium">{task.title}</p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => handleRunSpecialist(task)}
+                      disabled={isRunning}
+                      className={cn("px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all shadow-md active:scale-95",
+                        isRunning
+                          ? "bg-blue-600 text-white animate-pulse cursor-not-allowed"
+                          : "bg-blue-500 text-black hover:bg-blue-400"
+                      )}
+                    >
+                      {isRunning ? `${specialistName} is working...` : "Run Specialist"}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {pendingActions.filter(a => a.status === 'pending' || !a.status).length > 0 && (
-        <div className="mx-4 md:mx-6 mb-2 p-4 rounded-3xl bg-amber-500/5 border border-amber-500/20 space-y-3 shadow-lg animate-in fade-in duration-300">
+        <div className="mx-4 md:mx-6 mb-2 p-4 shrink-0 rounded-3xl bg-amber-500/5 border border-amber-500/20 space-y-3 shadow-lg animate-in fade-in duration-300">
           <div className="flex items-center justify-between border-b border-white/5 pb-2">
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
@@ -734,11 +886,9 @@ export default function AIAssistantPage() {
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <button 
-                    onClick={() => {
-                      resolvePendingAction(action.id, false);
-                      showToast.success("Action skipped.");
-                    }}
-                    className="px-3 py-1.5 rounded-xl bg-white/5 text-white/50 hover:text-white hover:bg-white/10 text-[9px] font-black uppercase tracking-widest transition-all"
+                    onClick={() => resolvePendingAction(action.id, false)}
+                    disabled={resolvingActionIds.includes(action.id)}
+                    className="px-3 py-1.5 rounded-xl bg-white/5 text-white/50 hover:text-white hover:bg-white/10 text-[9px] font-black uppercase tracking-widest transition-all disabled:opacity-50"
                   >
                     Skip
                   </button>
@@ -746,14 +896,18 @@ export default function AIAssistantPage() {
                     onClick={async () => {
                       try {
                         await resolvePendingAction(action.id, true);
-                        showToast.success('Action executed successfully.');
                       } catch (err: any) {
-                        showToast.error('Failed to execute: ' + err.message);
+                        // Error handling handled in resolvePendingAction
                       }
                     }}
-                    className="px-3 py-1.5 rounded-xl bg-emerald-500 text-black hover:bg-emerald-400 text-[9px] font-black uppercase tracking-widest transition-all shadow-md active:scale-95"
+                    disabled={resolvingActionIds.includes(action.id)}
+                    className={cn("px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all shadow-md active:scale-95",
+                      resolvingActionIds.includes(action.id)
+                        ? "bg-amber-600 text-white animate-pulse"
+                        : "bg-emerald-500 text-black hover:bg-emerald-400"
+                    )}
                   >
-                    Confirm
+                    {resolvingActionIds.includes(action.id) ? "Working..." : "Confirm"}
                   </button>
                 </div>
               </div>
@@ -763,7 +917,7 @@ export default function AIAssistantPage() {
       )}
 
       {/* Input Area */}
-      <div className="p-4 md:p-6 bg-black/40 border-t border-white/5">
+      <div className="p-4 md:p-6 shrink-0 bg-black/40 border-t border-white/5">
         {!aiSettings?.enabled && (
           <div className="mb-4 p-4 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center gap-4 text-red-500">
             <AlertCircle size={20} />

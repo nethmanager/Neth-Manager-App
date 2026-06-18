@@ -1091,5 +1091,38 @@ CREATE INDEX IF NOT EXISTS idx_ai_notifications_user ON public.ai_notifications(
 CREATE INDEX IF NOT EXISTS idx_ai_notifications_read ON public.ai_notifications(is_read);
 
 
+-- AI Agent Activity Events
+CREATE TABLE IF NOT EXISTS public.agent_activity_events (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  agent_id UUID REFERENCES public.ai_agents(id) ON DELETE CASCADE,
+  conversation_id UUID REFERENCES public.ai_conversations(id) ON DELETE CASCADE,
+  pending_action_id UUID REFERENCES public.ai_pending_actions(id) ON DELETE SET NULL,
+  event_type TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT,
+  title TEXT NOT NULL,
+  details JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS on agent_activity_events
+ALTER TABLE public.agent_activity_events ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can manage their own agent activity events" ON public.agent_activity_events;
+CREATE POLICY "Users can manage their own agent activity events"
+ON public.agent_activity_events
+FOR ALL
+TO authenticated
+USING (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+-- Indexes for agent_activity_events
+CREATE INDEX IF NOT EXISTS idx_agent_activity_events_user ON public.agent_activity_events(user_id);
+CREATE INDEX IF NOT EXISTS idx_agent_activity_events_convo ON public.agent_activity_events(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_agent_activity_events_action ON public.agent_activity_events(pending_action_id);
+
+
+
 
 

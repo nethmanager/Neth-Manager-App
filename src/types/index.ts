@@ -443,6 +443,7 @@ export interface AIAgent {
   is_active: boolean;
   permissions?: string[] | null;
   confirmation_policy?: any | null;
+  temperature?: number | null;
   created_at?: string;
   updated_at?: string;
 }

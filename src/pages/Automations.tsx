@@ -806,8 +806,8 @@ export default function Automations() {
       {/* 5. CREATE / EDIT AUTOMATION SCHEDULER MODAL */}
       {isCreateModalOpen && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-[1002]">
-          <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-xl overflow-hidden shadow-2xl relative">
-            <div className="p-6 border-b border-white/5 bg-slate-950/40 flex items-center justify-between">
+          <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-xl max-h-[90vh] sm:max-h-[85vh] flex flex-col overflow-hidden shadow-2xl relative">
+            <div className="p-6 border-b border-white/5 bg-slate-950/40 flex items-center justify-between shrink-0">
               <h3 className="text-md font-black text-white uppercase tracking-wider font-mono">{modalTitle}</h3>
               <button 
                 onClick={() => setIsCreateModalOpen(false)}
@@ -817,7 +817,7 @@ export default function Automations() {
               </button>
             </div>
 
-            <form onSubmit={handleSaveAutomation} className="p-6 space-y-4">
+            <form onSubmit={handleSaveAutomation} className="p-6 space-y-4 overflow-y-auto custom-scrollbar flex-1 min-h-0 pr-1">
               {/* Name */}
               <div>
                 <label className="block text-[10px] font-bold text-white/45 uppercase tracking-widest mb-1.5">Automation Label Name:</label>
@@ -1015,17 +1015,17 @@ export default function Automations() {
       {/* 6. PROPOSED PARAMS MODAL VIEW */}
       {selectedPayload && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-[1003]">
-          <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-lg overflow-hidden shadow-2xl">
-            <div className="p-6 border-b border-white/5 bg-slate-950/40 flex items-center justify-between">
+          <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+            <div className="p-6 border-b border-white/5 bg-slate-950/40 flex items-center justify-between shrink-0">
               <span className="text-xs font-black text-indigo-400 uppercase tracking-widest font-mono">Proposed Payload Schema Parameters</span>
               <button 
                 onClick={() => setSelectedPayload(null)}
-                className="w-8 h-8 rounded-xl bg-white/5 hover:bg-white/10 text-white/60 hover:text-white flex items-center justify-center transition-all"
+                className="w-8 h-8 rounded-xl bg-white/5 hover:bg-white/10 text-white/60 hover:text-white flex items-center justify-center transition-all shrink-0"
               >
                 <X size={16} />
               </button>
             </div>
-            <div className="p-6">
+            <div className="p-6 overflow-y-auto custom-scrollbar flex-1">
               <pre className="p-4 bg-slate-950 border border-white/5 rounded-2xl text-[11px] font-mono text-indigo-300 overflow-x-auto leading-relaxed max-h-[350px]">
                 {JSON.stringify(selectedPayload, null, 2)}
               </pre>

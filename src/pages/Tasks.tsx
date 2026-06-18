@@ -35,9 +35,10 @@ interface TaskRowProps {
   onDelete: (task: Task) => void;
   isMenuOpen: boolean;
   setMenuOpen: (isOpen: boolean) => void;
+  openUpwards?: boolean;
 }
 
-function TaskRow({ task, onRefresh, aiSettings, onEdit, onView, onDelete, isMenuOpen, setMenuOpen }: TaskRowProps) {
+function TaskRow({ task, onRefresh, aiSettings, onEdit, onView, onDelete, isMenuOpen, setMenuOpen, openUpwards }: TaskRowProps) {
   const [completing, setCompleting] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
   
@@ -154,7 +155,7 @@ function TaskRow({ task, onRefresh, aiSettings, onEdit, onView, onDelete, isMenu
   }, [isMenuOpen]);
 
   return (
-    <div className="group flex items-center gap-4 py-4 px-6 hover:bg-white/[0.03] transition-all border-b border-white/5 last:border-0 relative">
+    <div className="group flex items-center gap-4 py-4 px-6 hover:bg-white/[0.03] transition-all border-b border-white/5 last:border-0 last:rounded-b-[2.5rem] relative">
       <button 
         onClick={handleToggleDone}
         className={cn(
@@ -166,27 +167,32 @@ function TaskRow({ task, onRefresh, aiSettings, onEdit, onView, onDelete, isMenu
       </button>
       
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-3 mb-1">
+        <div className="flex items-center gap-2 mb-1 flex-wrap">
           <h4 className={cn(
             "text-sm font-semibold truncate group-hover:text-blue-400 transition-colors uppercase tracking-tight",
             task.status === 'done' ? "text-white/30 line-through" : "text-white"
           )}>{task.title}</h4>
-          <span className={cn("text-[9px] font-black uppercase px-2 py-0.5 rounded-full tracking-widest", statusColors[task.status])}>
+          <span className={cn("text-[9px] font-black uppercase px-2 py-0.5 rounded-full tracking-widest shrink-0", statusColors[task.status])}>
             {task.status.replace('_', ' ')}
+          </span>
+          <span className={cn("sm:hidden text-[9px] font-black uppercase px-2 py-0.5 rounded-full tracking-widest shrink-0", priorityColors[task.priority])}>
+            {task.priority}
           </span>
         </div>
         <div className="flex items-center gap-3">
           <span className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">{task.business?.name || 'Personal'}</span>
           <span className="w-1 h-1 rounded-full bg-white/10" />
           <span className="text-[10px] font-bold text-white/30 uppercase tracking-widest">{task.project?.name || 'Operations'}</span>
-          {task.due_date && (
-            <>
-              <span className="w-1 h-1 rounded-full bg-white/10" />
-              <span className="text-[10px] text-white/40 font-mono tracking-tighter">
-                {new Date(task.due_date).toLocaleDateString([], { month: 'short', day: 'numeric' })}
-              </span>
-            </>
-          )}
+          {(task.work_date || task.due_date) && (
+  <>
+    <span className="w-1 h-1 rounded-full bg-white/10" />
+    <span className="text-[10px] text-white/40 font-mono tracking-tighter">
+      {new Date(task.work_date || task.due_date!).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+      {' • '}
+      {new Date(task.work_date || task.due_date!).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+    </span>
+  </>
+)}
         </div>
       </div>
 
@@ -223,7 +229,10 @@ function TaskRow({ task, onRefresh, aiSettings, onEdit, onView, onDelete, isMenu
           </button>
           
           {isMenuOpen && (
-            <div className="absolute right-0 mt-2 w-48 bg-slate-900 border border-white/10 rounded-2xl shadow-2xl z-50 py-2 overflow-hidden backdrop-blur-xl">
+            <div className={cn(
+              "absolute right-0 w-48 bg-slate-900 border border-white/10 rounded-2xl shadow-2xl z-50 py-2 overflow-hidden backdrop-blur-xl",
+              openUpwards ? "bottom-full mb-2 origin-bottom" : "top-full mt-2 origin-top"
+            )}>
               <button 
                 onClick={() => { onView(task); setMenuOpen(false); }}
                 className="w-full flex items-center gap-3 px-4 py-2.5 text-[11px] font-bold text-white/70 hover:text-white hover:bg-white/5 uppercase tracking-widest transition-colors"
@@ -312,8 +321,8 @@ export default function Tasks() {
       platform_id: data.platform_id || null,
       status: data.status || 'today',
       priority: data.priority || 'medium',
-      due_date: data.due_date || null,
-      work_date: data.work_date || null,
+      due_date: data.due_date ? new Date(data.due_date).toISOString() : null,
+      work_date: data.work_date ? new Date(data.work_date).toISOString() : null,
       recurring_type: data.recurring_type || 'none',
       recurring_config,
       email_link: data.email_link?.trim() || null,
@@ -373,26 +382,23 @@ export default function Tasks() {
   const handleDelete = async (task: Task) => {
     if (!user) return;
     const isConfirmed = await confirm({
-      title: 'Cancel Task',
-      message: `Are you sure you want to cancel this task: ${task.title}?`,
-      confirmLabel: 'Cancel Task',
+      title: 'Delete Task',
+      message: `Are you sure you want to permanently delete this task: ${task.title}?`,
+      confirmLabel: 'Delete Task',
       isDestructive: true
     });
 
     if (!isConfirmed) return;
 
     try {
-      const { error: dErr } = await supabase.from('tasks').update({ 
-        status: 'cancelled',
-        updated_at: new Date().toISOString()
-      }).eq('id', task.id);
+      const { error: dErr } = await supabase.from('tasks').delete().eq('id', task.id);
       
       if (dErr) throw dErr;
 
       // Log activity (do not block)
       supabase.from('activity_logs').insert({
         user_id: user.id,
-        action: 'cancel',
+        action: 'delete',
         entity_type: 'task',
         entity_id: task.id,
         details: { title: task.title }
@@ -401,7 +407,7 @@ export default function Tasks() {
       });
 
       refetch();
-      showToast.success('Task cancelled');
+      showToast.success('Task deleted successfully');
     } catch (err: any) {
       showToast.error(`Something went wrong: ${err.message}`);
     }
@@ -427,9 +433,9 @@ export default function Tasks() {
         </button>
       </div>
 
-      <div className="bg-white/5 border border-white/10 rounded-[2.5rem] overflow-hidden backdrop-blur-xl shadow-2xl">
+      <div className="bg-white/5 border border-white/10 rounded-[2.5rem] backdrop-blur-xl shadow-2xl">
         {/* Filters Header */}
-        <div className="p-4 sm:p-8 border-b border-white/10 flex flex-col lg:flex-row lg:items-center justify-between gap-6 bg-white/[0.02]">
+        <div className="p-4 sm:p-8 border-b border-white/10 flex flex-col lg:flex-row lg:items-center justify-between gap-6 bg-white/[0.02] rounded-t-[2.5rem]">
           <div className="flex items-center gap-2 overflow-x-auto pb-2 lg:pb-0 no-scrollbar">
             {['all', 'backlog', 'today', 'in_progress', 'waiting', 'done'].map((f) => (
               <button
@@ -457,11 +463,11 @@ export default function Tasks() {
         </div>
 
         {/* Task List */}
-        <div className="divide-y divide-white/5 bg-white/[0.01]">
-          {loading ? (
-            Array(8).fill(0).map((_, i) => <div key={i} className="h-20 w-full bg-white/5 animate-pulse" />)
+        <div className="divide-y divide-white/5 bg-white/[0.01] rounded-b-[2.5rem]">
+          {(loading && !tasks) ? (
+            Array(8).fill(0).map((_, i) => <div key={i} className="h-20 w-full bg-white/5 animate-pulse last:rounded-b-[2.5rem]" />)
           ) : filteredTasks.length === 0 ? (
-            <div className="p-20 text-center flex flex-col items-center justify-center gap-6">
+            <div className="p-20 text-center flex flex-col items-center justify-center gap-6 rounded-b-[2.5rem]">
               <div className="w-16 h-16 rounded-3xl bg-white/5 flex items-center justify-center text-white/10">
                 <CheckCircle2 size={32} />
               </div>
@@ -471,7 +477,7 @@ export default function Tasks() {
               </div>
             </div>
           ) : (
-            filteredTasks.map((task) => (
+            filteredTasks.map((task, index) => (
               <TaskRow 
                 key={task.id} 
                 task={task} 
@@ -482,6 +488,7 @@ export default function Tasks() {
                 onDelete={handleDelete}
                 isMenuOpen={openMenuId === task.id}
                 setMenuOpen={(io) => setOpenMenuId(io ? task.id : null)}
+                openUpwards={index > 0 && (index === filteredTasks.length - 1 || (filteredTasks.length >= 3 && index === filteredTasks.length - 2))}
               />
             ))
           )}
@@ -551,8 +558,8 @@ export default function Tasks() {
             ],
             defaultValue: 'medium'
           },
-          { name: 'due_date', label: 'Due Date', type: 'date' },
-          { name: 'work_date', label: 'Scheduled Date', type: 'date' },
+          { name: 'due_date', label: 'Due Date', type: 'datetime-local' },
+          { name: 'work_date', label: 'Scheduled Date', type: 'datetime-local' },
           { 
             name: 'recurring_type', 
             label: 'Recurrence', 

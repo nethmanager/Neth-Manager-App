@@ -5,10 +5,221 @@ const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
 const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
 const serverSupabase = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
 
+export function sanitizeDate(dateVal: any, existingString: string | null = null): { date: string | null; text: string | null } {
+  if (dateVal === undefined || dateVal === null) {
+    return { date: null, text: existingString };
+  }
+  const dateStr = String(dateVal).trim();
+  if (!dateStr) {
+    return { date: null, text: existingString };
+  }
+
+  // Try parsing the date
+  const timestamp = Date.parse(dateStr);
+  if (!isNaN(timestamp)) {
+    return { date: new Date(timestamp).toISOString(), text: existingString };
+  }
+
+  // Common descriptive relative terms
+  const lowerStr = dateStr.toLowerCase();
+  const now = new Date();
+  if (lowerStr === "today") {
+    return { date: now.toISOString(), text: existingString };
+  }
+  if (lowerStr === "tomorrow") {
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return { date: tomorrow.toISOString(), text: existingString };
+  }
+  if (lowerStr === "yesterday") {
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    return { date: yesterday.toISOString(), text: existingString };
+  }
+
+  // If Date.parse failed, do not pass to SQL. Keep it null, and append a note about the user intended date
+  const appendNote = `[Unparsed Date: "${dateStr}"]`;
+  const updatedText = existingString && existingString.trim()
+    ? `${existingString}\n${appendNote}`
+    : appendNote;
+
+  return { date: null, text: updatedText };
+}
+
 export interface ToolResult {
   success: boolean;
   message: string;
   data?: any;
+}
+
+async function resolveToolTimeZone(db: any, userId: string, payload: any): Promise<string> {
+  const directTz = payload?.time_zone || payload?.timezone || payload?.user_timezone;
+  if (directTz && typeof directTz === "string" && directTz.trim()) {
+    return directTz.trim();
+  }
+
+  try {
+    const { data: profile } = await db
+      .from("profiles")
+      .select("timezone")
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (profile?.timezone && typeof profile.timezone === "string") {
+      return profile.timezone;
+    }
+  } catch {
+    // ignore and fall back
+  }
+
+  return "America/Cancun";
+}
+
+function formatToolDate(value: any, timeZone?: string): string | null {
+  if (!value) return null;
+
+  try {
+    const raw = String(value);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+      const [year, month, day] = raw.split("-").map(Number);
+      const localDate = new Date(year, month - 1, day);
+      return localDate.toLocaleDateString("en-US", {
+        timeZone,
+        month: "short",
+        day: "numeric",
+        year: "numeric"
+      });
+    }
+
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return raw;
+
+    const hasTime = /t|\d:\d/i.test(raw);
+    return hasTime
+      ? date.toLocaleString("en-US", {
+          timeZone,
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+          hour12: true
+        })
+      : date.toLocaleDateString("en-US", {
+          timeZone,
+          month: "short",
+          day: "numeric",
+          year: "numeric"
+        });
+  } catch {
+    return String(value);
+  }
+}
+
+function formatToolSuccessMessage(actionType: string, resultData: any, timeZone?: string): string {
+  switch (actionType) {
+    case "create_task": {
+      const title = resultData?.title || "the task";
+      const when = formatToolDate(resultData?.work_date || resultData?.due_date, timeZone);
+      return when
+        ? `Added task "${title}" for ${when}.`
+        : `Added task "${title}".`;
+    }
+    case "create_project": {
+      const name = resultData?.name || "the project";
+      return `Created project "${name}".`;
+    }
+    case "create_expense": {
+      const title = resultData?.title || "the expense";
+      const amount = resultData?.amount !== undefined && resultData?.amount !== null
+        ? `${resultData.currency || "$"}${resultData.amount}`
+        : null;
+      return amount
+        ? `Added expense "${title}" for ${amount}.`
+        : `Added expense "${title}".`;
+    }
+    case "create_contact": {
+      const name = resultData?.name || "the contact";
+      return `Added contact "${name}".`;
+    }
+    case "create_calendar_event": {
+      const title = resultData?.title || "the event";
+      const start = formatToolDate(resultData?.start_at, timeZone);
+      return start
+        ? `Added calendar event "${title}" for ${start}.`
+        : `Added calendar event "${title}".`;
+    }
+    case "move_email_to_folder": {
+      return `Moved the email to the selected folder.`;
+    }
+    case "link_email_to_project": {
+      return `Linked the email to the selected project.`;
+    }
+    case "update_project_status": {
+      const name = resultData?.name || "the project";
+      const status = resultData?.status || "updated";
+      return `Updated project "${name}" to ${status}.`;
+    }
+    case "add_project_note": {
+      const name = resultData?.name || "the project";
+      return `Added a note to project "${name}".`;
+    }
+    case "create_agent_task": {
+      const title = resultData?.title || "the delegated task";
+      const assignedAgentName = resultData?.assigned_agent_name;
+      return assignedAgentName
+        ? `Queued "${title}" for ${assignedAgentName}.`
+        : `Queued delegated task "${title}".`;
+    }
+    case "create_social_post": {
+      const title = resultData?.title || resultData?.caption || "the social post";
+      return `Created social post "${title}".`;
+    }
+    case "create_content_asset": {
+      const title = resultData?.title || "the content asset";
+      return `Created content asset "${title}".`;
+    }
+    default:
+      return `Successfully executed '${actionType}' on Neth Manager.`;
+  }
+}
+
+export function doesActionRequireConfirmation(actionType: string, confirmationPolicy: any): boolean {
+  const normalizedAction = String(actionType || "").trim();
+  if (!normalizedAction) return true;
+
+  if (confirmationPolicy && typeof confirmationPolicy === "object") {
+    if (confirmationPolicy[normalizedAction] === false) {
+      return false;
+    }
+    if (confirmationPolicy[normalizedAction] === true) {
+      return true;
+    }
+  }
+
+  // Safe defaults:
+  // - request_approval is already an approval artifact, so it may execute directly
+  // - write-capable actions default to requiring approval unless explicitly disabled
+  if (normalizedAction === "request_approval") {
+    return false;
+  }
+
+  const approvalByDefaultActions = new Set([
+    "create_project",
+    "create_task",
+    "create_expense",
+    "create_contact",
+    "link_email_to_project",
+    "create_calendar_event",
+    "move_email_to_folder",
+    "update_project_status",
+    "add_project_note",
+    "create_agent_task",
+    "create_social_post",
+    "create_content_asset"
+  ]);
+
+  return approvalByDefaultActions.has(normalizedAction);
 }
 
 function getRequiredPermissionForAction(actionType: string): string {
@@ -71,6 +282,57 @@ function getEntityTypeForAction(actionType: string): string | null {
   }
 }
 
+export async function logAgentActivity(
+  supabaseClient: any,
+  userId: string,
+  agentId: string | null | undefined,
+  conversationId: string | null | undefined,
+  pendingActionId: string | null | undefined,
+  eventType: string,
+  entityType: string,
+  entityId: string | null | undefined,
+  title: string,
+  details: any
+) {
+  const db = supabaseClient || serverSupabase;
+  if (!db) return;
+
+  try {
+    const { error } = await db.from("agent_activity_events").insert({
+      user_id: userId,
+      agent_id: agentId && agentId !== "default" ? agentId : null,
+      conversation_id: conversationId,
+      pending_action_id: pendingActionId,
+      event_type: eventType,
+      entity_type: entityType,
+      entity_id: entityId,
+      title,
+      details: typeof details === "string" ? { message: details } : details
+    });
+    if (!error) return;
+  } catch (err) {
+    // ignore and fallback
+  }
+
+  try {
+    await db.from("activity_logs").insert({
+      user_id: userId,
+      action: `${eventType}:${entityType || "generic"}`,
+      entity_type: entityType,
+      entity_id: entityId,
+      details: {
+        agent_id: agentId,
+        conversation_id: conversationId,
+        pending_action_id: pendingActionId,
+        title,
+        ...(typeof details === "object" ? details : { message: details })
+      }
+    });
+  } catch (e) {
+    console.warn("Could not write fallback log for logAgentActivity:", e);
+  }
+}
+
 export async function executeBackendTool(
   supabaseClient: any,
   agentId: string,
@@ -78,7 +340,8 @@ export async function executeBackendTool(
   actionType: string,
   payload: any,
   runId?: string,
-  pendingActionId?: string
+  pendingActionId?: string,
+  conversationId?: string | null
 ): Promise<ToolResult> {
   const db = supabaseClient || serverSupabase;
   if (!db) {
@@ -123,6 +386,7 @@ export async function executeBackendTool(
     // 1. Fetch AI Agent to check permissions
     let permissions: string[] = ["*"];
     let agentName = "System Agent";
+    let confirmationPolicy: any = {};
     
       if (agentId && agentId !== "default") {
       const { data: agent, error: agentError } = await db
@@ -135,12 +399,13 @@ export async function executeBackendTool(
       if (!agentError && agent) {
         agentName = agent.name;
         permissions = [...(agent.permissions || []), ...(agent.enabled_tools || [])];
+        confirmationPolicy = agent.confirmation_policy || {};
       } else {
         const failMsg = `Verification Failed: Agent '${agentId}' could not be validated.`;
         if (toolCallId) {
           await db.from("ai_agent_tool_calls").update({
             status: "failed",
-            error_message: failMsg
+            error: failMsg
           }).eq("id", toolCallId).catch(() => {});
         }
         return { success: false, message: failMsg };
@@ -160,10 +425,22 @@ export async function executeBackendTool(
       if (toolCallId) {
         await db.from("ai_agent_tool_calls").update({
           status: "failed",
-          error_message: failMsg
+          error: failMsg
         }).eq("id", toolCallId).catch(() => {});
       }
 
+      return { success: false, message: failMsg };
+    }
+
+    const requiresConfirmation = doesActionRequireConfirmation(actionType, confirmationPolicy);
+    if (requiresConfirmation && !pendingActionId) {
+      const failMsg = `Approval Required: Agent '${agentName}' must prepare '${actionType}' as a pending action before execution.`;
+      if (toolCallId) {
+        await db.from("ai_agent_tool_calls").update({
+          status: "failed",
+          error: failMsg
+        }).eq("id", toolCallId).catch(() => {});
+      }
       return { success: false, message: failMsg };
     }
 
@@ -215,6 +492,8 @@ export async function executeBackendTool(
           if (!plat) return { success: false, message: "Invalid platform_id. Ownership verification failed." };
         }
 
+        const { date: sanitizedDeadline, text: updatedNotes } = sanitizeDate(payload.deadline, payload.notes);
+
         const { data, error } = await db
           .from("projects")
           .insert({
@@ -223,12 +502,12 @@ export async function executeBackendTool(
             description: payload.description || null,
             status: payload.status || "planning",
             priority: payload.priority || "medium",
-            deadline: payload.deadline || null,
+            deadline: sanitizedDeadline,
             budget: payload.budget ? Number(payload.budget) : null,
             category: payload.category || "business",
             business_id: payload.business_id || null,
             platform_id: payload.platform_id || null,
-            notes: payload.notes || null
+            notes: updatedNotes
           })
           .select("*")
           .single();
@@ -266,6 +545,22 @@ export async function executeBackendTool(
           if (!biz) return { success: false, message: "Invalid business_id. Business ownership verification failed." };
         }
 
+        let currentNotes = payload.notes || null;
+        let sanitizedDueDate: string | null = null;
+        let sanitizedWorkDate: string | null = null;
+
+        if (payload.due_date) {
+          const res = sanitizeDate(payload.due_date, currentNotes);
+          sanitizedDueDate = res.date;
+          currentNotes = res.text;
+        }
+
+        if (payload.work_date) {
+          const res = sanitizeDate(payload.work_date, currentNotes);
+          sanitizedWorkDate = res.date;
+          currentNotes = res.text;
+        }
+
         const { data, error } = await db
           .from("tasks")
           .insert({
@@ -274,12 +569,12 @@ export async function executeBackendTool(
             description: payload.description || null,
             status: payload.status || "backlog",
             priority: payload.priority || "medium",
-            due_date: payload.due_date || null,
-            work_date: payload.work_date || null,
+            due_date: sanitizedDueDate,
+            work_date: sanitizedWorkDate,
             project_id: payload.project_id || null,
             business_id: payload.business_id || null,
             platform_id: payload.platform_id || null,
-            notes: payload.notes || null
+            notes: currentNotes
           })
           .select("*")
           .single();
@@ -344,6 +639,24 @@ export async function executeBackendTool(
           if (!contact) return { success: false, message: "Invalid counterparty_contact_id for expenses. Ownership check failed." };
         }
 
+        let currentNotes = payload.notes || null;
+        let sanitizedExpenseDate: string | null = null;
+        let sanitizedDueDate: string | null = null;
+
+        if (payload.expense_date) {
+          const res = sanitizeDate(payload.expense_date, currentNotes);
+          sanitizedExpenseDate = res.date || new Date().toISOString().split("T")[0];
+          currentNotes = res.text;
+        } else {
+          sanitizedExpenseDate = new Date().toISOString().split("T")[0];
+        }
+
+        if (payload.due_date) {
+          const res = sanitizeDate(payload.due_date, currentNotes);
+          sanitizedDueDate = res.date;
+          currentNotes = res.text;
+        }
+
         const { data, error } = await db
           .from("expenses")
           .insert({
@@ -355,13 +668,13 @@ export async function executeBackendTool(
             payment_type: payload.payment_type || "other",
             category: payload.category || "other",
             status: payload.status || "pending",
-            expense_date: payload.expense_date || new Date().toISOString().split("T")[0],
-            due_date: payload.due_date || null,
+            expense_date: sanitizedExpenseDate,
+            due_date: sanitizedDueDate,
             business_id: payload.business_id || null,
             project_id: payload.project_id || null,
             financial_account_id: payload.financial_account_id || null,
             counterparty_contact_id: payload.counterparty_contact_id || null,
-            notes: payload.notes || null
+            notes: currentNotes
           })
           .select("*")
           .single();
@@ -476,6 +789,45 @@ export async function executeBackendTool(
           accountData = acc;
         }
 
+        let timeZone: string | undefined = payload.time_zone;
+        if (!timeZone) {
+          try {
+            const { data: prof } = await db
+              .from("profiles")
+              .select("timezone")
+              .eq("id", userId)
+              .maybeSingle();
+            if (prof?.timezone) {
+              timeZone = prof.timezone;
+            }
+          } catch (e) {
+            // ignore
+          }
+        }
+
+        let startAt = payload.start_at;
+        let endAt = payload.end_at;
+        let eventDescription = payload.description || null;
+
+        const sanStart = sanitizeDate(startAt, eventDescription);
+        if (!sanStart.date) {
+          return {
+            success: false,
+            message: `Calendar Execution Error: Could not interpret start date '${startAt}'. Please provide a standard date/time format (such as '2026-06-16T10:00:00').`
+          };
+        }
+        startAt = sanStart.date;
+
+        const sanEnd = sanitizeDate(endAt, eventDescription);
+        if (!sanEnd.date) {
+          return {
+            success: false,
+            message: `Calendar Execution Error: Could not interpret end date '${endAt}'. Please provide a standard date/time format.`
+          };
+        }
+        endAt = sanEnd.date;
+        eventDescription = sanEnd.text;
+
         const isGoogle = String(accountData.provider).toLowerCase() === "google";
         if (isGoogle) {
           try {
@@ -483,11 +835,12 @@ export async function executeBackendTool(
               body: {
                 calendar_account_id: calendarAccountId,
                 title: payload.title,
-                description: payload.description || null,
+                description: eventDescription,
                 location: payload.location || null,
-                start_at: payload.start_at,
-                end_at: payload.end_at,
-                all_day: payload.all_day || false
+                start_at: startAt,
+                end_at: endAt,
+                all_day: payload.all_day || false,
+                time_zone: timeZone
               }
             });
 
@@ -515,10 +868,10 @@ export async function executeBackendTool(
               provider_calendar_id: payload.provider_calendar_id || "primary",
               provider_event_id: payload.provider_event_id || Math.random().toString(36).substring(2, 12),
               title: payload.title,
-              description: payload.description || null,
+              description: eventDescription,
               location: payload.location || null,
-              start_at: payload.start_at,
-              end_at: payload.end_at,
+              start_at: startAt,
+              end_at: endAt,
               all_day: payload.all_day || false,
               status: payload.status || "confirmed"
             })
@@ -660,6 +1013,22 @@ export async function executeBackendTool(
         if (!payload.provider) {
           return { success: false, message: "provider is a required field." };
         }
+        let currentCaption = payload.caption || null;
+        let sanitizedScheduledAt: string | null = null;
+        let sanitizedPublishedAt: string | null = null;
+
+        if (payload.scheduled_at) {
+          const res = sanitizeDate(payload.scheduled_at, currentCaption);
+          sanitizedScheduledAt = res.date;
+          currentCaption = res.text;
+        }
+
+        if (payload.published_at) {
+          const res = sanitizeDate(payload.published_at, currentCaption);
+          sanitizedPublishedAt = res.date;
+          currentCaption = res.text;
+        }
+
         const { data, error } = await db
           .from("social_posts")
           .insert({
@@ -671,11 +1040,11 @@ export async function executeBackendTool(
             external_post_id: payload.external_post_id || null,
             post_type: payload.post_type || "post",
             title: payload.title || null,
-            caption: payload.caption || null,
+            caption: currentCaption,
             media_asset_ids: payload.media_asset_ids || null,
             status: payload.status || "draft",
-            scheduled_at: payload.scheduled_at || null,
-            published_at: payload.published_at || null,
+            scheduled_at: sanitizedScheduledAt,
+            published_at: sanitizedPublishedAt,
             metrics: payload.metrics || {},
             raw_payload: payload.raw_payload || {},
             error: payload.error || null,
@@ -746,7 +1115,33 @@ export async function executeBackendTool(
           .single();
 
         if (error) throw error;
-        resultData = data;
+
+        let assignedAgentName = "the specialist agent";
+        if (data.assigned_agent_id) {
+          const { data: agentRow } = await db
+            .from("ai_agents")
+            .select("name")
+            .eq("id", data.assigned_agent_id)
+            .maybeSingle();
+          if (agentRow?.name) {
+            assignedAgentName = agentRow.name;
+          }
+        }
+
+        await logAgentActivity(
+          db,
+          userId,
+          agentId,
+          conversationId,
+          pendingActionId,
+          "delegated_task_created",
+          "agent_task",
+          data.id,
+          `Delegated task created: ${data.title}`,
+          { task: data, assigned_agent_name: assignedAgentName }
+        );
+
+        resultData = { ...data, assigned_agent_name: assignedAgentName };
         break;
       }
 
@@ -786,6 +1181,19 @@ export async function executeBackendTool(
     // Write a real success trace in activity_logs
     await logActivity(`ai_tool_success:${actionType}`, entityType, resultData?.id || null, { agent_id: agentId, action_type: actionType, success: true, timestamp: new Date().toISOString() });
 
+    await logAgentActivity(
+      db,
+      userId,
+      agentId,
+      conversationId,
+      pendingActionId,
+      "tool_succeeded",
+      entityType || "generic",
+      resultData?.id || null,
+      `Agent executed tool successfully: ${actionType}`,
+      { result: resultData }
+    );
+
     // Update tool call log status to success dynamically
     if (toolCallId) {
       await db.from("ai_agent_tool_calls").update({
@@ -794,9 +1202,11 @@ export async function executeBackendTool(
       }).eq("id", toolCallId).catch(() => {});
     }
 
+    const displayTimeZone = await resolveToolTimeZone(db, userId, payload);
+
     return {
       success: true,
-      message: `Successfully executed '${actionType}' on Neth Manager.`,
+      message: formatToolSuccessMessage(actionType, resultData, displayTimeZone),
       data: resultData
     };
 
@@ -804,11 +1214,24 @@ export async function executeBackendTool(
     console.error(`Error in executor for tool ${actionType}:`, err);
     await logActivity(`ai_tool_error:${actionType}`, "ai_agent", null, { agent_id: agentId, error: err.message || String(err), timestamp: new Date().toISOString() });
 
+    await logAgentActivity(
+      db,
+      userId,
+      agentId,
+      conversationId,
+      pendingActionId,
+      "tool_failed",
+      "generic",
+      null,
+      `Agent tool execution failed: ${actionType}`,
+      { error: err.message || String(err) }
+    );
+
     // Update tool call log status to failed dynamically
     if (toolCallId) {
       await db.from("ai_agent_tool_calls").update({
         status: "failed",
-        error_message: err.message || String(err)
+        error: err.message || String(err)
       }).eq("id", toolCallId).catch(() => {});
     }
 

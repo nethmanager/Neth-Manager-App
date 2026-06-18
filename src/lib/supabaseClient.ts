@@ -7,5 +7,17 @@ export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey && su
 
 export const supabase = createClient(
   supabaseUrl || 'https://placeholder.supabase.co',
-  supabaseAnonKey || 'placeholder'
+  supabaseAnonKey || 'placeholder',
+  {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+      flowType: 'pkce',
+      // Override default Web Locks API (navigator.locks) to prevent cross-tab/iframe lock stealing errors
+      lock: async <R>(_name: string, _acquireTimeout: number, fn: () => Promise<R>): Promise<R> => {
+        return fn();
+      }
+    }
+  }
 );

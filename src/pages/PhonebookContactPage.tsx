@@ -669,7 +669,7 @@ setFinancialAccounts((accountsData || []) as any[]);
 
             <div className="grid grid-cols-1 gap-3">
               {expenses.map(expense => (
-                <div key={expense.id} className="group flex items-center justify-between p-4 bg-white/5 border border-white/5 rounded-2xl hover:bg-white/[0.08] transition-all">
+                <div key={expense.id} className="group flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-white/5 border border-white/5 rounded-2xl hover:bg-white/[0.08] transition-all">
                   <div className="flex items-center gap-4">
                     <div className={cn(
                       "p-3 rounded-xl border",
@@ -679,20 +679,20 @@ setFinancialAccounts((accountsData || []) as any[]);
                     </div>
                     <div>
                       <h4 className="text-sm font-bold text-white uppercase tracking-tight">{expense.title}</h4>
-                      <div className="flex items-center gap-2 mt-0.5">
+                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                         <span className="text-[9px] font-black text-white/20 uppercase tracking-widest">{new Date(expense.expense_date).toLocaleDateString()}</span>
                         <span className="w-1 h-1 rounded-full bg-white/10" />
                         <span className="text-[9px] font-black text-white/20 uppercase tracking-widest">{expense.account?.name || 'Manual Cash'}</span>
                         {expense.project && (
                           <>
                             <span className="w-1 h-1 rounded-full bg-white/10" />
-                            <span className="text-[9px] font-black text-blue-400 uppercase tracking-widest">Project: {expense.project.name}</span>
+                            <span className="text-[9px] font-black text-blue-400 uppercase tracking-widest leading-none">Project: {expense.project.name}</span>
                           </>
                         )}
                       </div>
                     </div>
                   </div>
-                  <div className="text-right">
+                  <div className="text-left sm:text-right shrink-0">
                     <p className={cn("text-lg font-black tracking-tight", expense.direction === 'in' ? "text-emerald-400" : "text-red-400")}>
                       {expense.direction === 'in' ? '+' : '-'}${expense.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </p>
@@ -719,21 +719,21 @@ setFinancialAccounts((accountsData || []) as any[]);
             
             <div className="grid grid-cols-1 gap-3">
               {emails.map(email => (
-                <div key={email.id} className="group flex items-center justify-between p-4 bg-white/5 border border-white/5 rounded-2xl hover:bg-white/[0.08] transition-all">
-                  <div className="flex items-center gap-4 flex-1">
-                    <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/5 flex items-center justify-center text-white/20">
+                <div key={email.id} className="group flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-white/5 border border-white/5 rounded-2xl hover:bg-white/[0.08] transition-all">
+                  <div className="flex items-center gap-4 flex-1 min-w-0 w-full">
+                    <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/5 flex items-center justify-center text-white/20 shrink-0">
                       <Mail size={18} />
                     </div>
-                    <div className="flex-1">
-                      <h4 className="text-sm font-bold text-white uppercase tracking-tight line-clamp-1">{email.subject}</h4>
-                      <div className="flex items-center gap-2 mt-0.5">
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-sm font-bold text-white uppercase tracking-tight truncate">{email.subject}</h4>
+                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                         <span className="text-[9px] font-black text-white/20 uppercase tracking-widest">{new Date(email.received_at).toLocaleDateString()}</span>
                         <span className="w-1 h-1 rounded-full bg-white/10" />
-                        <span className="text-[9px] font-black text-white/40 tracking-widest">{email.sender}</span>
+                        <span className="text-[9px] font-black text-white/40 tracking-widest truncate max-w-[200px]">{email.sender}</span>
                       </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-4">
+                  <div className="flex items-center justify-between sm:justify-end gap-4 w-full sm:w-auto shrink-0 pt-2 sm:pt-0 border-t border-white/5 sm:border-t-0">
                     <div className="text-right">
                       <span className="px-2 py-0.5 rounded bg-white/5 text-[8px] font-black text-white/40 uppercase tracking-[0.2em]">{email.status}</span>
                     </div>

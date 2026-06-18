@@ -68,10 +68,16 @@ export default function Schedule() {
       if (error) throw error;
       
       showToast.dismiss(toastId);
-      showToast.success(`Successfully synced ${data?.synced ?? 0} events!`);
-      refetchEvents();
-      refetchAccounts();
-      refetchTasks();
+
+if (data?.errors?.length) {
+  showToast.error(`Calendar sync issue: ${data.errors[0]}`);
+} else {
+  showToast.success(`Successfully synced ${data?.synced ?? 0} events!`);
+}
+
+refetchEvents();
+refetchAccounts();
+refetchTasks();
     } catch (err: any) {
       console.error('Calendar sync failed:', err);
       showToast.dismiss(toastId);

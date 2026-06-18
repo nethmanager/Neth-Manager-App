@@ -4,6 +4,7 @@ import { cn } from '../lib/utils';
 import { useAI } from '../contexts/AIContext';
 import { useUI } from '../contexts/UIContext';
 import { useNavigate } from 'react-router-dom';
+import { supabase } from '../lib/supabaseClient';
 
 export default function AIAssistantFooter() {
   const navigate = useNavigate();
@@ -19,6 +20,7 @@ export default function AIAssistantFooter() {
 
   const {
     messages,
+    setMessages,
     loading,
     aiSettings,
     dbContext,
@@ -38,8 +40,118 @@ export default function AIAssistantFooter() {
     activeAgentId,
     activeAgent,
     setActiveAgentId,
-    provider
+    provider,
+    pendingActions,
+    resolvingActionIds,
+    resolvePendingAction,
+    refreshPendingActions
   } = useAI();
+
+  const [pendingAgentTasks, setPendingAgentTasks] = useState<any[]>([]);
+  const [runningTaskIds, setRunningTaskIds] = useState<string[]>([]);
+
+  const fetchPendingTasks = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      
+      const { data: tasks, error } = await supabase
+        .from('agent_tasks')
+        .select(`
+          *,
+          assigned_agent:ai_agents!assigned_agent_id(name, role)
+        `)
+        .in('status', ['pending', 'queued'])
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+        
+      if (!error && tasks) {
+        setPendingAgentTasks(tasks);
+      }
+    } catch (e) {
+      console.warn("Error fetching pending agent tasks in footer:", e);
+    }
+  };
+
+  useEffect(() => {
+    if (isExpanded) {
+      fetchPendingTasks();
+      const interval = setInterval(fetchPendingTasks, 5000);
+      return () => clearInterval(interval);
+    } else {
+      setPendingAgentTasks([]);
+    }
+  }, [isExpanded]);
+
+  const handleRunSpecialist = async (task: any) => {
+    if (runningTaskIds.includes(task.id)) return;
+    setRunningTaskIds(prev => [...prev, task.id]);
+    
+    const specialistName = task.assigned_agent?.name || "Specialist";
+    showToast.success(`Starting ${specialistName} background run...`);
+
+    // Immediately append a chat message like "{specialistName} is working on it..."
+    setMessages?.(prev => [
+      ...prev,
+      { role: 'assistant' as const, content: `${specialistName} is working on it...` }
+    ]);
+    
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const activeId = activeAgent?.id || 'default_conversation';
+      const currentConvId = localStorage.getItem(`ai_conversation_id_${activeId}`);
+
+      const res = await fetch("/api/assistant/agent-task/process", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session?.access_token}`
+        },
+        body: JSON.stringify({
+          agent_task_id: task.id,
+          conversation_id: currentConvId || undefined
+        })
+      });
+      const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to process specialist agent task.");
+      }
+      
+      // Append returned timeline_messages
+      if (data.timeline_messages && Array.isArray(data.timeline_messages)) {
+        setMessages?.(prev => [
+          ...prev,
+          ...data.timeline_messages.map((m: string) => ({ role: 'assistant' as const, content: m }))
+        ]);
+      }
+      
+      // If action is created, immediately refresh pending actions list
+      if (data.action_created) {
+        await refreshPendingActions();
+      }
+
+      // If pending action exists, show a confirmation message
+      if (data.pending_action) {
+        setMessages?.(prev => [
+          ...prev,
+          { role: 'assistant' as const, content: `${specialistName} prepared an action. Confirm it below.` }
+        ]);
+        showToast.success(`${specialistName} prepared an action!`);
+      } else {
+        showToast.success(`Specialist task processed successfully!`);
+      }
+      
+      // Immediately refresh tasks list
+      fetchPendingTasks();
+    } catch (err: any) {
+      console.error("Run Specialist error:", err);
+      showToast.error(err.message || "Failed running specialist task.");
+      fetchPendingTasks();
+    } finally {
+      setRunningTaskIds(prev => prev.filter(id => id !== task.id));
+    }
+  };
 
   // Handle mobile & desktop dynamic heights for scroll padding offsets
   useEffect(() => {
@@ -165,8 +277,9 @@ export default function AIAssistantFooter() {
     return mins === 0 ? "Synced just now" : `Synced ${mins}m ago`;
   };
 
-  const effectiveProvider = activeAgent?.model_provider || provider || 'ollama';
+    const effectiveProvider = activeAgent?.model_provider || provider || 'ollama';
   const isCloud = ['gemini', 'openai', 'claude'].includes(effectiveProvider);
+  const visiblePendingActions = pendingActions.filter(a => a.status === 'pending' || !a.status);
 
   return (
     <div className="fixed bottom-0 left-0 lg:left-72 right-0 z-[50] bg-slate-950/90 backdrop-blur-2xl border-t border-white/5 shadow-[0_-8px_32px_-12px_rgba(0,0,0,0.5)] transition-all duration-300 ease-in-out font-sans pb-[env(safe-area-inset-bottom,0px)]">
@@ -205,6 +318,71 @@ export default function AIAssistantFooter() {
                 <Terminal size={10} className="text-amber-500 shrink-0" />
                 <span>Future messages processed by: {activeAgent?.name || 'Emily'} ({activeAgent?.role || 'Executive Assistant'})</span>
               </div>
+                            {pendingAgentTasks.length > 0 && (
+                <div className="space-y-2 border-t border-blue-500/20 pt-3">
+                  <div className="flex items-center gap-1.5 px-1 py-0.5">
+                    <Bot size={12} className="text-blue-500" />
+                    <span className="text-[9px] font-black uppercase tracking-widest text-blue-400">Delegated Specialist Tasks ({pendingAgentTasks.length})</span>
+                  </div>
+                  {pendingAgentTasks.map(task => {
+                    const isRunning = runningTaskIds.includes(task.id);
+                    return (
+                      <div key={task.id} className="p-3 rounded-2xl bg-blue-500/5 border border-blue-500/10 flex items-center justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[10px] text-white/95 font-bold mb-0.5">
+                            {task.assigned_agent?.name || "Specialist"}: {task.title}
+                          </p>
+                          <p className="text-[9px] text-white/40 truncate">
+                            Type: {task.task_type || 'General'}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => handleRunSpecialist(task)}
+                          disabled={isRunning}
+                          className={cn("px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all shrink-0", 
+                            isRunning 
+                              ? "bg-blue-600 border border-blue-500 text-white animate-pulse" 
+                              : "bg-blue-500/10 border border-blue-500/20 text-blue-400 hover:text-white hover:bg-blue-600"
+                          )}
+                        >
+                          {isRunning ? "Working..." : "Run"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {visiblePendingActions.length > 0 && (
+                <div className="space-y-2 border-t border-amber-500/20 pt-3">
+                  {visiblePendingActions.map(action => (
+                    <div key={action.id} className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-between gap-3">
+                      <p className="text-[10px] text-white/80 font-bold">
+                        {action.summary || action.description || 'Pending action needs approval'}
+                      </p>
+                      <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={() => resolvePendingAction(action.id, false)}
+                        disabled={resolvingActionIds.includes(action.id)}
+                        className="px-3 py-1 rounded-lg bg-white/5 text-white/50 text-[9px] font-black uppercase tracking-widest disabled:opacity-50"
+                      >
+                        Skip
+                      </button>
+                      <button
+                        onClick={() => resolvePendingAction(action.id, true)}
+                        disabled={resolvingActionIds.includes(action.id)}
+                        className={cn("px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest", 
+                          resolvingActionIds.includes(action.id) 
+                            ? "bg-amber-600 text-white animate-pulse" 
+                            : "bg-emerald-500 text-black hover:bg-emerald-400"
+                        )}
+                      >
+                        {resolvingActionIds.includes(action.id) ? "Working..." : "Confirm"}
+                      </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
               {loading && (
                 <div className="flex items-center gap-1.5 text-blue-500 animate-pulse pl-2">
                   <Zap size={14} className="fill-current" />

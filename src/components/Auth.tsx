@@ -68,10 +68,11 @@ export default function Auth() {
         // Manual profile creation if signup was successful
         if (data?.user) {
           await supabase.from('profiles').upsert({
-             id: data.user.id,
-             email: data.user.email,
-             updated_at: new Date().toISOString()
-          });
+   id: data.user.id,
+   email: data.user.email,
+   timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Cancun',
+   updated_at: new Date().toISOString()
+});
         }
       }
     } catch (err: any) {

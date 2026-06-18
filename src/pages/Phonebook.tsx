@@ -201,7 +201,7 @@ export default function Phonebook() {
         </button>
       </div>
 
-      <div className="flex flex-col md:flex-row items-center gap-4">
+      <div className="flex flex-col md:flex-row items-stretch md:items-center gap-4">
         <div className="relative flex-1">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-white/20" size={16} />
           <input 
@@ -213,8 +213,8 @@ export default function Phonebook() {
           />
         </div>
         
-        <div className="flex items-center gap-2">
-          <div className="bg-white/5 border border-white/5 rounded-2xl p-1 flex">
+        <div className="flex items-center gap-2 w-full md:w-auto">
+          <div className="bg-white/5 border border-white/5 rounded-2xl p-1 flex-1 md:flex-initial flex justify-around md:justify-start">
             <select
               value={filterType}
               onChange={(e) => setFilterType(e.target.value)}

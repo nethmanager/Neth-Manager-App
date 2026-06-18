@@ -40,7 +40,8 @@ serve(async (req) => {
       location,
       start_at,
       end_at,
-      all_day
+      all_day,
+      time_zone
     } = body
 
     if (!calendar_account_id || !title || !start_at || !end_at) {
@@ -48,6 +49,16 @@ serve(async (req) => {
         status: 400,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       })
+    }
+
+    let activeTimeZone = 'America/Cancun'
+    if (typeof time_zone === 'string' && time_zone.trim()) {
+      try {
+        Intl.DateTimeFormat(undefined, { timeZone: time_zone })
+        activeTimeZone = time_zone
+      } catch (e) {
+        // Fallback
+      }
     }
 
     // Load calendar account row to verify ownership
@@ -116,10 +127,10 @@ serve(async (req) => {
     // Call Google Calendar API events.insert
     const googleStart = all_day
       ? { date: start_at.substring(0, 10) }
-      : { dateTime: new Date(start_at).toISOString() }
+      : { dateTime: start_at, timeZone: activeTimeZone }
     const googleEnd = all_day
       ? { date: end_at.substring(0, 10) }
-      : { dateTime: new Date(end_at).toISOString() }
+      : { dateTime: end_at, timeZone: activeTimeZone }
 
     const insertResponse = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
       method: 'POST',

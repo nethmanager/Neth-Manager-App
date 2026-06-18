@@ -1057,19 +1057,21 @@ export default function Platforms() {
       {/* Social Post Draft Overlay Dialog Modal */}
       {newPostOpen && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-white/10 rounded-[2.5rem] p-8 w-full max-w-xl shadow-2xl relative">
+          <div className="bg-slate-900 border border-white/10 rounded-2xl md:rounded-[2.5rem] p-6 md:p-8 w-full max-w-xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl relative">
             <button 
               onClick={() => setNewPostOpen(false)}
-              className="absolute top-6 right-6 p-2 text-white/40 hover:text-white rounded-xl bg-white/5"
+              className="absolute top-4 right-4 md:top-6 md:right-6 p-2 text-white/40 hover:text-white rounded-xl bg-white/5 z-10"
             >
               <X size={18} />
             </button>
 
-            <h3 className="text-2xl font-bold text-white mb-2 uppercase tracking-tight">Draft New Social Post</h3>
-            <p className="text-xs text-white/40 mb-6">Create a post safely inside the creative hub before external audit logic reviews it.</p>
+            <div className="shrink-0 pr-8">
+              <h3 className="text-xl md:text-2xl font-bold text-white mb-2 uppercase tracking-tight">Draft New Social Post</h3>
+              <p className="text-xs text-white/40 mb-4 md:mb-6">Create a post safely inside the creative hub before external audit logic reviews it.</p>
+            </div>
 
-            <form onSubmit={handleSaveSocialDraft} className="space-y-6">
-              <div className="grid grid-cols-2 gap-4">
+            <form onSubmit={handleSaveSocialDraft} className="space-y-6 overflow-y-auto custom-scrollbar flex-1 min-h-0 pr-1">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-[11px] font-black text-white/40 uppercase tracking-widest mb-2">Target Provider</label>
                   <select 

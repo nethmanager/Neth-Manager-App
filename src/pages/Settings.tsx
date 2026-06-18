@@ -491,7 +491,7 @@ export default function Settings() {
     setSaving(true);
     try {
       const timestamp = new Date().toISOString();
-      const payload = {
+      const payload: any = {
         ...editingAgent,
         user_id: user.id,
         is_active: true,
@@ -505,21 +505,52 @@ export default function Settings() {
           .eq('user_id', user.id);
       }
 
+      let saveError: any = null;
+      let usedFallback = false;
+
+      const attemptSave = async (savePayload: any) => {
+        if (isCreatingNew) {
+          const payloadCopy = { ...savePayload };
+          delete payloadCopy.id;
+          const { error } = await supabase
+            .from('ai_agents')
+            .insert(payloadCopy);
+          return error;
+        } else {
+          const { error } = await supabase
+            .from('ai_agents')
+            .update(savePayload)
+            .eq('id', editingAgent.id)
+            .eq('user_id', user.id);
+          return error;
+        }
+      };
+
+      saveError = await attemptSave(payload);
+
+      // If the schema cache is missing confirmation_policy, retry without it!
+      if (saveError && String(saveError.message || "").toLowerCase().includes("confirmation_policy")) {
+        console.warn("Retrying save without confirmation_policy column due to missing DB schema column.");
+        const fallbackPayload = { ...payload };
+        delete fallbackPayload.confirmation_policy;
+        saveError = await attemptSave(fallbackPayload);
+        usedFallback = true;
+      }
+
+      if (saveError) throw saveError;
+
       if (isCreatingNew) {
-        delete payload.id;
-        const { error } = await supabase
-          .from('ai_agents')
-          .insert(payload);
-        if (error) throw error;
-        showToast.success('Agent created successfully.');
+        if (usedFallback) {
+          showToast.success('Agent created (database migration needed for confirmation policy; run ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS confirmation_policy JSONB DEFAULT \'{}\'::JSONB; in Supabase to enable).');
+        } else {
+          showToast.success('Agent created successfully.');
+        }
       } else {
-        const { error } = await supabase
-          .from('ai_agents')
-          .update(payload)
-          .eq('id', editingAgent.id)
-          .eq('user_id', user.id);
-        if (error) throw error;
-        showToast.success('Agent details updated.');
+        if (usedFallback) {
+          showToast.success('Agent details updated (database migration needed for confirmation policy; run ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS confirmation_policy JSONB DEFAULT \'{}\'::JSONB; in Supabase to enable).');
+        } else {
+          showToast.success('Agent details updated.');
+        }
       }
 
       setEditingAgent(null);
@@ -544,9 +575,10 @@ export default function Settings() {
     }
   };
   const [profile, setProfile] = useState({
-    full_name: '',
-    avatar_url: ''
-  });
+  full_name: '',
+  avatar_url: '',
+  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Cancun'
+});
   const [aiPrompts, setAiPrompts] = useState<any[]>([]);
   const [isPromptModalOpen, setIsPromptModalOpen] = useState(false);
   const [editingPrompt, setEditingPrompt] = useState<any>(null);
@@ -570,9 +602,10 @@ export default function Settings() {
       const { data: profileData } = await supabase.from('profiles').select('*').eq('id', user.id).maybeSingle();
       if (profileData) {
         setProfile({
-          full_name: profileData.full_name || '',
-          avatar_url: profileData.avatar_url || ''
-        });
+  full_name: profileData.full_name || '',
+  avatar_url: profileData.avatar_url || '',
+  timezone: profileData.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Cancun'
+});
       }
 
       // Fetch AI Settings
@@ -610,9 +643,10 @@ export default function Settings() {
     try {
       const timestamp = new Date().toISOString();
       const cleanProfile = {
-        full_name: profile.full_name?.trim() || null,
-        avatar_url: profile.avatar_url?.trim() || null
-      };
+  full_name: profile.full_name?.trim() || null,
+  avatar_url: profile.avatar_url?.trim() || null,
+  timezone: profile.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Cancun'
+};
       const cleanAiSettings = {
         enabled: !!aiSettings.enabled,
         ollama_endpoint: aiSettings.ollama_endpoint?.trim() || 'http://localhost:11434/api/generate',
@@ -624,11 +658,12 @@ export default function Settings() {
 
       // Save Profile
       await supabase.from('profiles').upsert({ 
-        id: user.id, 
-        ...cleanProfile,
-        email: user.email,
-        updated_at: timestamp
-      });
+  id: user.id, 
+  ...cleanProfile,
+  email: user.email,
+  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Cancun',
+  updated_at: timestamp
+});
       // Save AI Settings
       await supabase.from('ai_settings').upsert({ 
         user_id: user.id, 
@@ -1294,6 +1329,28 @@ export default function Settings() {
                         </p>
                       )}
                     </div>
+
+                    {/* Ollama Startup Instruction Helper */}
+                    <div className="p-3 rounded-xl bg-black/40 border border-white/5 space-y-1.5 font-sans min-w-0">
+                      <div className="flex justify-between items-center text-[8px] font-black uppercase text-white/40 tracking-wider">
+                        <span>Ollama Startup Command</span>
+                        <button 
+                          onClick={() => {
+                            navigator.clipboard.writeText('$env:OLLAMA_ORIGINS="http://localhost:3000,https://ais-dev-dkobt4keatbfrwa5de7sxh-22129348999.us-central1.run.app"; ollama serve');
+                            showToast.success('Copied startup command!');
+                          }}
+                          className="hover:text-amber-400 transition-colors uppercase font-bold text-[8px]"
+                        >
+                          Copy Command
+                        </button>
+                      </div>
+                      <div className="text-[10px] p-2 bg-black/50 rounded-lg border border-white/5 font-mono text-amber-200/80 break-all leading-normal select-all">
+                        $env:OLLAMA_ORIGINS="http://localhost:3000,https://ais-dev-dkobt4keatbfrwa5de7sxh-22129348999.us-central1.run.app"; ollama serve
+                      </div>
+                      <p className="text-[8px] text-white/25 uppercase font-bold tracking-normal leading-normal">
+                        Run this in Windows PowerShell before connecting Ollama to allow web app calls.
+                      </p>
+                    </div>
                   </div>
                   <div className="pt-3 border-t border-white/5 text-[9px] font-bold text-white/20 uppercase tracking-widest flex justify-between font-sans gap-2 min-w-0">
                     <span className="truncate">Ollama Local Host Integration</span>
@@ -1312,7 +1369,7 @@ export default function Settings() {
                       </div>
                     </div>
  
-                    <div className="grid grid-cols-3 gap-2 font-sans">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 font-sans">
                       {/* Daily budget cap input */}
                       <div className="space-y-1 p-2 rounded-xl bg-black/25 border border-white/5 min-w-0">
                         <label className="block text-[8px] font-black text-white/35 uppercase tracking-wider truncate" title="Daily Cap">Daily Cap</label>
@@ -1944,13 +2001,46 @@ export default function Settings() {
 
                     <div>
                       <label className="block text-[10px] font-bold text-white/30 uppercase tracking-[0.2em] mb-2 px-1">Model Name</label>
-                      <input 
-                        type="text" 
+                      <select
                         className="w-full bg-black/40 border border-white/10 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-amber-500 transition-all font-bold"
-                        placeholder="e.g. gemini-2.5-flash-lite, gpt-4.1-mini, or gemma4:12b"
                         value={editingAgent.model_name || ''}
                         onChange={(e) => setEditingAgent({ ...editingAgent, model_name: e.target.value })}
-                      />
+                      >
+                        {editingAgent.model_provider === 'gemini' && (
+                          <>
+                            <option value="gemini-2.5-flash-lite" className="text-black">gemini-2.5-flash-lite</option>
+                            <option value="gemini-2.5-flash" className="text-black">gemini-2.5-flash</option>
+                            <option value="gemini-1.5-flash" className="text-black">gemini-1.5-flash</option>
+                            <option value="gemini-1.5-pro" className="text-black">gemini-1.5-pro</option>
+                          </>
+                        )}
+
+                        {editingAgent.model_provider === 'openai' && (
+                          <>
+                            <option value="gpt-4o-mini" className="text-black">gpt-4o-mini</option>
+                            <option value="gpt-4.1-mini" className="text-black">gpt-4.1-mini</option>
+                            <option value="gpt-4o" className="text-black">gpt-4o</option>
+                          </>
+                        )}
+
+                        {editingAgent.model_provider === 'claude' && (
+                          <>
+                            <option value="claude-haiku-4-5" className="text-black">claude-haiku-4-5</option>
+                            <option value="claude-3-5-sonnet" className="text-black">claude-3-5-sonnet</option>
+                          </>
+                        )}
+
+                        {editingAgent.model_provider === 'ollama' && (
+                          <>
+                            <option value="gemma3:4b" className="text-black">gemma3:4b</option>
+                            <option value="gemma4:12b" className="text-black">gemma4:12b</option>
+                            <option value="llama3.2:3b" className="text-black">llama3.2:3b</option>
+                            <option value="llama3:latest" className="text-black">llama3:latest</option>
+                            <option value="qwen2.5-coder:3b-instruct" className="text-black">qwen2.5-coder:3b-instruct</option>
+                            <option value="qwen3:8b" className="text-black">qwen3:8b</option>
+                          </>
+                        )}
+                      </select>
                     </div>
 
                     <div>

@@ -47,7 +47,7 @@ serve(async (req) => {
     if (accountsError) throw accountsError
     if (!accounts || accounts.length === 0) {
       return new Response(
-        JSON.stringify({ synced: 0, message: 'No active Google Calendar accounts found.' }),
+        JSON.stringify({ synced: 0, errors: [], message: 'No active Google Calendar accounts found.' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
@@ -56,6 +56,7 @@ serve(async (req) => {
     const clientSecret = Deno.env.get('GOOGLE_CLIENT_SECRET')
 
     let totalSynced = 0
+const syncErrors: string[] = []
 
     for (const account of accounts) {
       // Get token details
@@ -65,13 +66,26 @@ serve(async (req) => {
         .eq('calendar_account_id', account.id)
         .maybeSingle()
 
-      if (tokenError || !token) {
-        console.warn(`No tokens found for calendar account ${account.id}. Skipping...`)
-        continue
-      }
+    if (tokenError || !token) {
+  const message = `No tokens found for calendar account ${account.email_address || account.id}. Reconnect Google Calendar.`
+  console.warn(message)
+  syncErrors.push(message)
+  continue
+}
 
       let accessToken = token.access_token
       const isExpired = !token.token_expires_at || new Date(token.token_expires_at) <= new Date(Date.now() + 60000)
+
+      if (isExpired && !token.refresh_token) {
+  const message = `Google Calendar token expired for ${account.email_address || account.id}, and no refresh token is available. Reconnect Google Calendar.`
+  console.error(message)
+  syncErrors.push(message)
+  await supabaseAdmin
+    .from('calendar_accounts')
+    .update({ status: 'error', updated_at: new Date().toISOString() })
+    .eq('id', account.id)
+  continue
+}
 
       if (isExpired && token.refresh_token) {
         console.log(`Access token expired for calendar account ${account.id}. Refreshing...`)
@@ -91,15 +105,16 @@ serve(async (req) => {
         })
 
         const refreshData = await refreshResponse.json()
-        if (refreshData.error) {
-          console.error(`Token refresh failed for calendar account ${account.id}:`, refreshData)
-          // Mark account as error status maybe
-          await supabaseAdmin
-            .from('calendar_accounts')
-            .update({ status: 'error', updated_at: new Date().toISOString() })
-            .eq('id', account.id)
-          continue
-        }
+       if (refreshData.error) {
+  const message = `Token refresh failed for ${account.email_address || account.id}: ${refreshData.error_description || refreshData.error}`
+  console.error(message, refreshData)
+  syncErrors.push(message)
+  await supabaseAdmin
+    .from('calendar_accounts')
+    .update({ status: 'error', updated_at: new Date().toISOString() })
+    .eq('id', account.id)
+  continue
+}
 
         accessToken = refreshData.access_token
         const newExpiresAt = new Date(Date.now() + refreshData.expires_in * 1000).toISOString()
@@ -147,10 +162,12 @@ serve(async (req) => {
       })
 
       if (!eventsResponse.ok) {
-        const errText = await eventsResponse.text()
-        console.error(`Failed to fetch events from Google for account ${account.id}:`, errText)
-        continue
-      }
+  const errText = await eventsResponse.text()
+  const message = `Failed to fetch Google Calendar events for ${account.email_address || account.id}: ${eventsResponse.status} ${errText}`
+  console.error(message)
+  syncErrors.push(message)
+  continue
+}
 
       const eventsData = await eventsResponse.json()
       const googleEvents = eventsData.items || []
@@ -189,10 +206,12 @@ raw_payload: item,
           .upsert(eventsToUpsert, { onConflict: 'calendar_account_id,provider_calendar_id,provider_event_id' })
 
         if (upsertError) {
-          console.error(`Failed to upsert events for calendar account ${account.id}:`, upsertError)
-        } else {
-          totalSynced += eventsToUpsert.length
-        }
+  const message = `Failed to save Google Calendar events for ${account.email_address || account.id}: ${upsertError.message}`
+  console.error(message, upsertError)
+  syncErrors.push(message)
+} else {
+  totalSynced += eventsToUpsert.length
+}
       }
 
       // Update last_synced_at timestamp on account
@@ -203,7 +222,7 @@ raw_payload: item,
     }
 
     return new Response(
-      JSON.stringify({ synced: totalSynced }),
+      JSON.stringify({ synced: totalSynced, errors: syncErrors }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
   } catch (error: any) {

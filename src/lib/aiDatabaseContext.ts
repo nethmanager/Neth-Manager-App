@@ -48,6 +48,7 @@ export async function buildAIDatabaseContext(userId: string, isDetailed: boolean
     email_accounts,
     emails,
     daily_plans,
+    email_folders,
     activity_logs,
     ai_settings,
     project_items,
@@ -62,7 +63,11 @@ export async function buildAIDatabaseContext(userId: string, isDetailed: boolean
     social_profiles,
     social_posts,
     approval_requests,
-    agent_tasks
+    agent_tasks,
+    ai_usage_events,
+    ai_agent_runs,
+    ai_usage_limits,
+    ai_model_prices
   ] = await Promise.all([
     fetchData('profiles', supabase.from('profiles').select('*').eq('id', userId).maybeSingle()),
     fetchData('businesses', supabase.from('businesses').select('*').eq('user_id', userId).limit(50)),
@@ -70,8 +75,9 @@ export async function buildAIDatabaseContext(userId: string, isDetailed: boolean
     fetchData('projects', supabase.from('projects').select('*, business:businesses(name), platform:platforms(name)').eq('user_id', userId).order('created_at', { ascending: false }).limit(limits.projects)),
     fetchData('tasks', supabase.from('tasks').select('*, business:businesses(name), project:projects(name), platform:platforms(name)').eq('user_id', userId).order('created_at', { ascending: false }).limit(limits.tasks)),
     fetchData('email_accounts', supabase.from('email_accounts').select('id,email_address,provider,status,last_synced_at,business:businesses(name)').eq('user_id', userId).limit(20)),
-    fetchData('emails', supabase.from('emails').select('subject, sender, received_at, status, is_read, snippet, project:projects!linked_project_id(name), platform:platforms!linked_platform_id(name)').eq('user_id', userId).order('received_at', { ascending: false }).limit(limits.emails)),
+    fetchData('emails', supabase.from('emails').select('id, account_id, folder_id, linked_project_id, linked_platform_id, tags, ai_summary, ai_suggested_task_title, subject, sender, received_at, status, is_read, snippet, project:projects!linked_project_id(name), platform:platforms!linked_platform_id(name)').eq('user_id', userId).order('received_at', { ascending: false }).limit(limits.emails)),
     fetchData('daily_plans', supabase.from('daily_plans').select('*').eq('user_id', userId).order('date', { ascending: false }).limit(7)),
+    fetchData('email_folders', supabase.from('email_folders').select('id, name, email_account_id, folder_type').eq('user_id', userId)),
     fetchData('activity_logs', supabase.from('activity_logs').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(limits.activity)),
     fetchData('ai_settings', supabase.from('ai_settings').select('*').eq('user_id', userId).maybeSingle()),
     fetchData('project_items', supabase.from('project_items').select('*, project:projects(name)').eq('user_id', userId).limit(50)),
@@ -81,12 +87,16 @@ export async function buildAIDatabaseContext(userId: string, isDetailed: boolean
     fetchData('email_project_links', supabase.from('email_project_links').select('email_id, project:projects(name)').eq('user_id', userId)),
     fetchData('expense_project_links', supabase.from('expense_project_links').select('expense_id, project:projects(name)').eq('user_id', userId)),
     fetchData('calendar_accounts', supabase.from('calendar_accounts').select('*').eq('user_id', userId).limit(50)),
-    fetchData('calendar_events', supabase.from('calendar_events').select('*, account:calendar_accounts(email_address, display_name)').eq('user_id', userId).limit(100)),
+    fetchData('calendar_events', supabase.from('calendar_events').select('*, account:calendar_accounts(email_address, display_name)').eq('user_id', userId).order('start_at', { ascending: true }).limit(100)),
     fetchData('integration_accounts', supabase.from('integration_accounts').select('id, provider, status').eq('user_id', userId).limit(50)),
     fetchData('social_profiles', supabase.from('social_profiles').select('id, provider, handle, display_name, follower_count').eq('user_id', userId).limit(50)),
     fetchData('social_posts', supabase.from('social_posts').select('id, provider, title, status, scheduled_at').eq('user_id', userId).neq('status', 'published').limit(50)),
     fetchData('approval_requests', supabase.from('approval_requests').select('id, entity_type, action_type, status').eq('user_id', userId).eq('status', 'pending').limit(50)),
-    fetchData('agent_tasks', supabase.from('agent_tasks').select('id, task_type, status').eq('user_id', userId).order('created_at', { ascending: false }).limit(20))
+    fetchData('agent_tasks', supabase.from('agent_tasks').select('id, task_type, status').eq('user_id', userId).order('created_at', { ascending: false }).limit(20)),
+    fetchData('ai_usage_events', supabase.from('ai_usage_events').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(50)),
+    fetchData('ai_agent_runs', supabase.from('ai_agent_runs').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(20)),
+    fetchData('ai_usage_limits', supabase.from('ai_usage_limits').select('*').eq('user_id', userId).maybeSingle()),
+    fetchData('ai_model_prices', supabase.from('ai_model_prices').select('*'))
   ]);
 
   // Helper to add to sensitive values
@@ -175,8 +185,9 @@ export async function buildAIDatabaseContext(userId: string, isDetailed: boolean
       allow_sensitive_context: ai_settings.allow_sensitive_context,
       endpoint: ai_settings.ollama_endpoint ? 'configured' : 'missing'
     } : null,
-    profile: profile ? { name: profile.full_name, email: profile.email } : null,
-    businesses: businesses?.map((b: any) => ({ 
+    profile: profile ? { name: profile.full_name, email: profile.email, timezone: profile.timezone } : null,
+    businesses: businesses?.map((b: any) => ({
+      id: b.id,
       name: b.name, 
       region: b.region, 
       status: b.status,
@@ -185,17 +196,22 @@ export async function buildAIDatabaseContext(userId: string, isDetailed: boolean
       inc_date: b.incorporation_date,
       notes: truncateText(b.notes, 150)
     })),
-    platforms: platforms?.map((p: any) => ({ 
+    platforms: platforms?.map((p: any) => ({
+      id: p.id,
+      business_id: p.business_id,
       name: p.name, 
       category: p.category, 
       status: p.status,
       business: p.business?.name,
       has_notes: !!p.notes,
       has_login_notes: !!p.login_notes,
-      login_notes: p.login_notes, // Will be sanitized later
+      login_notes: p.login_notes,
       notes: truncateText(p.notes, 150)
     })),
     projects: projects?.map((p: any) => ({ 
+      id: p.id,
+      business_id: p.business_id,
+      platform_id: p.platform_id,
       name: p.name, 
       status: p.status, 
       priority: p.priority, 
@@ -209,6 +225,8 @@ export async function buildAIDatabaseContext(userId: string, isDetailed: boolean
       notes: truncateText(p.notes, 150)
     })),
     project_items: project_items?.map((item: any) => ({
+      id: item.id,
+      project_id: item.project_id,
       name: item.name,
       type: item.item_type,
       status: item.status,
@@ -220,6 +238,10 @@ export async function buildAIDatabaseContext(userId: string, isDetailed: boolean
       notes: truncateText(item.notes, 150)
     })),
     tasks: tasks?.map((t: any) => ({ 
+      id: t.id,
+      business_id: t.business_id,
+      project_id: t.project_id,
+      platform_id: t.platform_id,
       title: t.title, 
       status: t.status, 
       priority: t.priority, 
@@ -234,57 +256,75 @@ export async function buildAIDatabaseContext(userId: string, isDetailed: boolean
       notes: truncateText(t.notes, 150)
     })),
     expenses: expenses?.map((e: any) => ({
+      id: e.id,
+      business_id: e.business_id,
+      project_id: e.project_id,
+      financial_account_id: e.financial_account_id,
+      counterparty_contact_id: e.counterparty_contact_id,
+      status: e.status,
       title: e.title,
       direction: e.direction,
       amount: e.amount,
       currency: e.currency,
-      status: e.status,
       date: e.expense_date,
       category: e.category,
       payment_type: e.payment_type,
-      business: e.business?.name,
-      primary_project: e.project?.name,
-      all_projects: (expense_project_links as any[])?.filter(l => l.expense_id === e.id).map(l => l.project?.name),
-      project_item: e.project_item?.name,
-      account: e.account?.name,
-      contact: e.contact?.name,
+      receipt_url: e.receipt_url,
       notes: truncateText(e.notes, 150)
     })),
     accounts: financial_accounts?.map((a: any) => ({
+      id: a.id,
+      parent_id: a.parent_id,
       name: a.name,
       type: a.account_type,
+      current_balance: a.current_balance,
       currency: a.currency,
       institution: a.institution_name,
       business: a.business?.name,
       status: a.status
     })),
     contacts: phonebook_contacts?.map((c: any) => ({
+      id: c.id,
+      business_id: c.business_id,
       name: c.name,
       type: c.contact_type,
       company: c.company_name,
       business: c.business?.name,
       email: c.email,
       phone: c.phone,
-      tax_id: c.tax_id,
-      address: c.address
+      notes: truncateText(c.notes, 150)
     })),
     email_accounts: email_accounts?.map((a: any) => ({ 
+      id: a.id,
       email: a.email_address, 
       provider: a.provider,
       business: a.business?.name 
     })),
-    emails: emails?.map((e: any) => ({ 
+    email_folders: email_folders?.map((f: any) => ({
+      id: f.id,
+      name: f.name,
+      account_id: f.email_account_id,
+      folder_type: f.folder_type
+    })),
+    emails: emails?.map((e: any) => ({
+      id: e.id,
+      account_id: e.account_id,
+      folder_id: e.folder_id,
+      linked_project_id: e.linked_project_id,
+      linked_platform_id: e.linked_platform_id,
+      tags: e.tags,
+      ai_summary: e.ai_summary,
+      ai_suggested_task_title: e.ai_suggested_task_title,
       subject: e.subject, 
       sender: e.sender, 
       status: e.status, 
       is_read: e.is_read,
       received_at: e.received_at,
       snippet: truncateText(e.snippet, 200),
-      primary_project: e.project?.name,
-      all_projects: (email_project_links as any[])?.filter(l => l.email_id === e.id).map(l => l.project?.name),
-      platform: e.platform?.name
+      primary_project: e.project?.name
     })),
     daily_plans: daily_plans?.map((d: any) => ({ 
+      id: d.id,
       date: d.date, 
       morning_plan: truncateText(d.morning_plan, 200),
       top_priorities: d.top_priorities,
@@ -293,21 +333,27 @@ export async function buildAIDatabaseContext(userId: string, isDetailed: boolean
       notes: truncateText(d.notes, 150)
     })),
     calendar_accounts: calendar_accounts?.map((a: any) => ({
+      id: a.id,
       email: a.email_address,
       provider: a.provider,
       status: a.status,
       display_name: a.display_name
     })),
     calendar_events: calendar_events?.map((e: any) => ({
+      id: e.id,
+      calendar_account_id: e.calendar_account_id,
       title: e.title,
       start_at: e.start_at,
       end_at: e.end_at,
       all_day: e.all_day,
       location: e.location,
-      status: e.status,
-      account_email: e.account?.email_address,
-      account_name: e.account?.display_name
+      status: e.status
     })),
+    spending_summary: {
+      recent_runs: ai_agent_runs?.slice(0, 10).map((r: any) => ({ id: r.id, status: r.status, model: r.model_name, cost: r.estimated_cost_usd })),
+      limits: ai_usage_limits ? { daily: ai_usage_limits.daily_budget_usd, monthly: ai_usage_limits.monthly_budget_usd } : null,
+      usage_metrics: ai_usage_events?.slice(0, 10).map((u: any) => ({ agent: u.agent_id, provider: u.provider, cost: u.estimated_cost_usd }))
+    },
     recent_activity: activity_logs?.map((a: any) => ({ 
       action: a.action, 
       entity: a.entity_type, 

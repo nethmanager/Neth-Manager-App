@@ -2028,7 +2028,7 @@ if (updateErr) throw updateErr;
               )}
 
               <div className="flex-1 overflow-y-auto divide-y divide-white/5 no-scrollbar">
-                {loading ? (
+                {(loading && !emails) ? (
                   Array(8).fill(0).map((_, i) => <div key={i} className="h-16 w-full bg-white/5 animate-pulse" />)
                 ) : filteredEmails?.length === 0 ? (
                   <div className="flex-1 h-full flex flex-col items-center justify-center p-20 text-center opacity-20">

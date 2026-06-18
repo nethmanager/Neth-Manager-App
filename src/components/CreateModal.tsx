@@ -12,7 +12,7 @@ interface CreateModalProps {
   fields: {
     name: string;
     label: string;
-    type: 'text' | 'textarea' | 'select' | 'date' | 'number' | 'checkbox-group';
+    type: 'text' | 'textarea' | 'select' | 'date' | 'datetime-local' | 'number' | 'checkbox-group';
     options?: { label: string; value: string }[];
     defaultValue?: any;
     placeholder?: string;
@@ -41,6 +41,18 @@ export default function CreateModal({
 
   if (field.type === 'textarea' && typeof value === 'object') {
     return JSON.stringify(value, null, 2);
+  }
+
+  if (field.type === 'datetime-local' && typeof value === 'string' && value) {
+    const d = new Date(value);
+    if (!Number.isNaN(d.getTime())) {
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+  }
+
+  if (field.type === 'date' && typeof value === 'string' && value.includes('T')) {
+    return value.split('T')[0];
   }
 
   return value;
@@ -109,14 +121,14 @@ useEffect(() => {
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 20 }}
             className={cn(
-"relative w-full max-h-[calc(100dvh-8rem)] bg-slate-900 border border-white/10 rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden",
+"relative w-full max-h-[90vh] sm:max-h-[calc(100dvh-8rem)] bg-slate-900 border border-white/10 rounded-[2rem] sm:rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden",
               children ? "max-w-2xl" : "max-w-lg"
             )}
           >
             {/* Header */}
-            <div className="flex justify-between items-center px-8 py-6 border-b border-white/5 bg-slate-900/50 backdrop-blur-xl shrink-0">
+            <div className="flex justify-between items-center px-6 py-4 sm:px-8 sm:py-6 border-b border-white/5 bg-slate-900/50 backdrop-blur-xl shrink-0">
               <div>
-                <h3 className="text-xl font-bold text-white uppercase tracking-tight">
+                <h3 className="text-lg sm:text-xl font-bold text-white uppercase tracking-tight">
                   {title}
                 </h3>
                 {mode === 'view' && !hideFooter && <p className="text-[10px] font-bold text-white/30 uppercase tracking-widest mt-1">View only</p>}
@@ -131,7 +143,7 @@ useEffect(() => {
 
             {/* Body */}
             <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar p-8 space-y-6 overscroll-contain">
+              <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar p-6 sm:p-8 space-y-5 sm:space-y-6 overscroll-contain">
                 {fields.map((field) => (
                   <div key={field.name} className="space-y-1.5">
                     <label className="block text-[10px] font-bold text-white/30 uppercase tracking-[0.2em] ml-1">
@@ -145,7 +157,7 @@ useEffect(() => {
                           "w-full bg-black/40 border border-white/10 rounded-2xl px-5 py-4 text-sm text-white focus:border-blue-500 outline-none min-h-[120px] transition-all placeholder:text-white/10",
                           mode === 'view' && "opacity-60 cursor-default focus:border-white/10"
                         )}
-                        value={formData[field.name]}
+                        value={formData[field.name] ?? ''}
                         onChange={(e) => setFormData({ ...formData, [field.name]: e.target.value })}
                       />
                     ) : field.type === 'select' ? (
@@ -155,7 +167,7 @@ useEffect(() => {
                           "w-full bg-black/40 border border-white/10 rounded-2xl px-5 py-4 text-sm text-white focus:border-blue-500 outline-none transition-all appearance-none",
                           mode === 'view' && "opacity-60 cursor-default focus:border-white/10"
                         )}
-                        value={formData[field.name]}
+                        value={formData[field.name] ?? ''}
                         onChange={(e) => setFormData({ ...formData, [field.name]: e.target.value })}
                       >
                         {field.options?.map((opt) => (
@@ -214,7 +226,7 @@ useEffect(() => {
                           "w-full bg-black/40 border border-white/10 rounded-2xl px-5 py-4 text-sm text-white focus:border-blue-500 outline-none transition-all placeholder:text-white/10",
                           mode === 'view' && "opacity-60 cursor-default focus:border-white/10"
                         )}
-                        value={formData[field.name]}
+                        value={formData[field.name] ?? ''}
                         onChange={(e) => setFormData({ ...formData, [field.name]: e.target.value })}
                       />
                     )}
