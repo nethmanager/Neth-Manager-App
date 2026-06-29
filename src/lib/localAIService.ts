@@ -12,11 +12,36 @@ export interface OllamaResponse {
   eval_duration?: number;
 }
 
+function getOllamaUrls(endpoint: string): { baseUrl: string; generateUrl: string; tagsUrl: string } {
+  let cleaned = (endpoint || '').trim();
+  
+  // Strip trailing slashes
+  while (cleaned.endsWith('/')) {
+    cleaned = cleaned.slice(0, -1);
+  }
+  
+  // Determine baseUrl
+  let baseUrl = cleaned;
+  if (cleaned.endsWith('/api/generate')) {
+    baseUrl = cleaned.slice(0, -13);
+  }
+  
+  // Strip trailing slashes from baseUrl just in case
+  while (baseUrl.endsWith('/')) {
+    baseUrl = baseUrl.slice(0, -1);
+  }
+  
+  return {
+    baseUrl,
+    generateUrl: `${baseUrl}/api/generate`,
+    tagsUrl: `${baseUrl}/api/tags`
+  };
+}
+
 export async function testOllamaConnection(endpoint: string): Promise<string[] | null> {
   try {
-    // Using the tags endpoint as a health check
-    const baseUrl = endpoint.replace('/api/generate', '');
-    const response = await fetch(`${baseUrl}/api/tags`, {
+    const { tagsUrl } = getOllamaUrls(endpoint);
+    const response = await fetch(tagsUrl, {
       method: 'GET',
     });
     
@@ -40,7 +65,8 @@ export async function generateResponse(
   max_tokens?: number
 ): Promise<string> {
   try {
-    const response = await fetch(endpoint, {
+    const { generateUrl } = getOllamaUrls(endpoint);
+    const response = await fetch(generateUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -68,3 +94,4 @@ export async function generateResponse(
     throw error;
   }
 }
+

@@ -3,11 +3,13 @@ import { Bot, Send, Zap, AlertCircle, RefreshCw, Terminal, Mic, MicOff, Volume2,
 import { cn } from '../lib/utils';
 import { useAI } from '../contexts/AIContext';
 import { useUI } from '../contexts/UIContext';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 
 export default function AIAssistantFooter() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const isAssistantRoute = location.pathname === '/assistant';
   const { showToast } = useUI();
   const [isExpanded, setIsExpanded] = useState(false);
   const [input, setInput] = useState('');
@@ -156,13 +158,18 @@ export default function AIAssistantFooter() {
   // Handle mobile & desktop dynamic heights for scroll padding offsets
   useEffect(() => {
     const handleResize = () => {
+      if (isAssistantRoute) {
+        document.documentElement.style.setProperty('--ai-footer-height', '0px');
+        document.documentElement.style.setProperty('--ai-footer-expanded-height', '0px');
+        return;
+      }
       const height = window.innerWidth >= 768 ? '88px' : '64px';
       document.documentElement.style.setProperty('--ai-footer-height', height);
     };
     handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, []);
+  }, [isAssistantRoute]);
 
   // Scroll to bottom when expanded
   useEffect(() => {
@@ -170,9 +177,13 @@ export default function AIAssistantFooter() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
     // Update CSS variable for layout adjustments
+    if (isAssistantRoute) {
+      document.documentElement.style.setProperty('--ai-footer-expanded-height', '0px');
+      return;
+    }
     const expandedHeight = isExpanded ? 'min(400px, 35vh)' : '0px';
     document.documentElement.style.setProperty('--ai-footer-expanded-height', expandedHeight);
-  }, [messages, isExpanded, loading]);
+  }, [messages, isExpanded, loading, isAssistantRoute]);
 
   // Initial Context Refresh logic
   useEffect(() => {
@@ -280,6 +291,8 @@ export default function AIAssistantFooter() {
     const effectiveProvider = activeAgent?.model_provider || provider || 'ollama';
   const isCloud = ['gemini', 'openai', 'claude'].includes(effectiveProvider);
   const visiblePendingActions = pendingActions.filter(a => a.status === 'pending' || !a.status);
+
+  if (isAssistantRoute) return null;
 
   return (
     <div className="fixed bottom-0 left-0 lg:left-72 right-0 z-[50] bg-slate-950/90 backdrop-blur-2xl border-t border-white/5 shadow-[0_-8px_32px_-12px_rgba(0,0,0,0.5)] transition-all duration-300 ease-in-out font-sans pb-[env(safe-area-inset-bottom,0px)]">

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Outlet, useLocation } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import AIAssistantFooter from './AIAssistantFooter';
 import Auth from './Auth';
@@ -9,6 +9,8 @@ import { Menu, X, Zap } from 'lucide-react';
 export default function Layout() {
   const { user, loading } = useUser();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const location = useLocation();
+  const isAssistantRoute = location.pathname === '/assistant';
 
   if (loading) {
     return (
@@ -82,12 +84,16 @@ export default function Layout() {
         </header>
 
         <main
-          className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-3.5 sm:p-5 lg:p-8"
-          style={{
+          className={
+            isAssistantRoute 
+              ? "flex-1 min-h-0 overflow-hidden p-2 lg:p-3" 
+              : "flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-3.5 sm:p-5 lg:p-8"
+          }
+          style={isAssistantRoute ? {} : {
             paddingBottom: 'calc(var(--ai-footer-height, 72px) + var(--ai-footer-expanded-height, 0px) + env(safe-area-inset-bottom, 0px) + 4rem)'
           }}
         >
-          <div className="max-w-[1536px] w-[95vw] lg:w-full mx-auto">
+          <div className={isAssistantRoute ? "w-full h-full mx-auto" : "max-w-[1536px] w-[95vw] lg:w-full mx-auto"}>
             <Outlet />
           </div>
         </main>

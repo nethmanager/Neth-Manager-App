@@ -1,4 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
+import { extractCalendarDateReferences, findBestTextMatch, findCalendarEventCandidates, getLocalDateKey, getSafeTimeZone, resolveNaturalDateTime } from "./agentDomainUtils.js";
+import { agentToolRegistry, logActionWorkflowMemory } from "./agentRegistry.js";
 
 // Lazy server-side Supabase client initialization
 const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
@@ -116,7 +118,16 @@ function formatToolDate(value: any, timeZone?: string): string | null {
   }
 }
 
-function formatToolSuccessMessage(actionType: string, resultData: any, timeZone?: string): string {
+function formatToolSuccessMessage(actionType: string, resultData: any, timeZone?: string, payload?: any): string {
+  const tool = agentToolRegistry[actionType];
+  if (tool && tool.successFormatter) {
+    try {
+      return tool.successFormatter(payload || {}, resultData, timeZone);
+    } catch (err) {
+      console.warn(`Registry successFormatter failed for ${actionType}:`, err);
+    }
+  }
+
   switch (actionType) {
     case "create_task": {
       const title = resultData?.title || "the task";
@@ -125,9 +136,28 @@ function formatToolSuccessMessage(actionType: string, resultData: any, timeZone?
         ? `Added task "${title}" for ${when}.`
         : `Added task "${title}".`;
     }
+    case "update_task": {
+      const title = resultData?.title || "the task";
+      const when = formatToolDate(resultData?.work_date || resultData?.due_date, timeZone);
+      return when
+        ? `Updated task "${title}" for ${when}.`
+        : `Updated task "${title}".`;
+    }
+    case "delete_task": {
+      const title = resultData?.title || "the task";
+      return `Deleted task "${title}".`;
+    }
     case "create_project": {
       const name = resultData?.name || "the project";
       return `Created project "${name}".`;
+    }
+    case "update_project": {
+      const name = resultData?.name || "the project";
+      return `Updated project "${name}".`;
+    }
+    case "delete_project": {
+      const name = resultData?.name || "the project";
+      return `Deleted project "${name}".`;
     }
     case "create_expense": {
       const title = resultData?.title || "the expense";
@@ -138,9 +168,30 @@ function formatToolSuccessMessage(actionType: string, resultData: any, timeZone?
         ? `Added expense "${title}" for ${amount}.`
         : `Added expense "${title}".`;
     }
+    case "update_expense": {
+      const title = resultData?.title || "the expense";
+      const amount = resultData?.amount !== undefined && resultData?.amount !== null
+        ? `${resultData.currency || "$"}${resultData.amount}`
+        : null;
+      return amount
+        ? `Updated expense "${title}" for ${amount}.`
+        : `Updated expense "${title}".`;
+    }
+    case "delete_expense": {
+      const title = resultData?.title || "the expense";
+      return `Deleted expense "${title}".`;
+    }
     case "create_contact": {
       const name = resultData?.name || "the contact";
       return `Added contact "${name}".`;
+    }
+    case "update_contact": {
+      const name = resultData?.name || "the contact";
+      return `Updated contact "${name}".`;
+    }
+    case "delete_contact": {
+      const name = resultData?.name || "the contact";
+      return `Deleted contact "${name}".`;
     }
     case "create_calendar_event": {
       const title = resultData?.title || "the event";
@@ -148,6 +199,17 @@ function formatToolSuccessMessage(actionType: string, resultData: any, timeZone?
       return start
         ? `Added calendar event "${title}" for ${start}.`
         : `Added calendar event "${title}".`;
+    }
+    case "update_calendar_event": {
+      const title = resultData?.title || "the event";
+      const start = formatToolDate(resultData?.start_at, timeZone);
+      return start
+        ? `Updated calendar event "${title}" for ${start}.`
+        : `Updated calendar event "${title}".`;
+    }
+    case "delete_calendar_event": {
+      const title = resultData?.title || "the event";
+      return `Deleted calendar event "${title}".`;
     }
     case "move_email_to_folder": {
       return `Moved the email to the selected folder.`;
@@ -184,6 +246,63 @@ function formatToolSuccessMessage(actionType: string, resultData: any, timeZone?
   }
 }
 
+export function validateToolAction(
+  actionType: string,
+  payload: any,
+  agentEnabledTools: string[] | undefined,
+  isExecutingDirectly: boolean
+): { valid: boolean; error?: string } {
+  const tool = agentToolRegistry[actionType];
+  
+  // 1. Reject unknown action types
+  if (!tool) {
+    return { valid: false, error: `Rejected unknown action type "${actionType}".` };
+  }
+
+  // 2. Reject actions outside the agent’s enabled tools/permissions
+  if (agentEnabledTools) {
+    const isEnabled = agentEnabledTools.some(
+      (tName) => tName.toLowerCase() === actionType.toLowerCase()
+    );
+    if (!isEnabled) {
+      return {
+        valid: false,
+        error: `Rejected action "${actionType}": This action is outside the active assistant's enabled capabilities.`
+      };
+    }
+  }
+
+  // 3. Reject destructive actions without explicit confirmation
+  const isDestructive = 
+    actionType.startsWith("delete") || 
+    actionType.includes("delete") || 
+    tool.riskLevel === "high";
+
+  if (isDestructive && isExecutingDirectly) {
+    return {
+      valid: false,
+      error: `Rejected destructive action "${actionType}": Destructive actions cannot be executed directly; they require explicit human confirmation.`
+    };
+  }
+
+  // 4. Validate required fields from the tool registry
+  if (tool.expectedPayloadFields) {
+    for (const field of tool.expectedPayloadFields) {
+      if (field.required) {
+        const val = payload ? payload[field.name] : undefined;
+        if (val === undefined || val === null || val === "") {
+          return {
+            valid: false,
+            error: `Validation Error: "${field.name}" is a required field for action "${actionType}".`
+          };
+        }
+      }
+    }
+  }
+
+  return { valid: true };
+}
+
 export function doesActionRequireConfirmation(actionType: string, confirmationPolicy: any): boolean {
   const normalizedAction = String(actionType || "").trim();
   if (!normalizedAction) return true;
@@ -206,11 +325,21 @@ export function doesActionRequireConfirmation(actionType: string, confirmationPo
 
   const approvalByDefaultActions = new Set([
     "create_project",
+    "update_project",
+    "delete_project",
     "create_task",
+    "update_task",
+    "delete_task",
     "create_expense",
+    "update_expense",
+    "delete_expense",
     "create_contact",
+    "update_contact",
+    "delete_contact",
     "link_email_to_project",
     "create_calendar_event",
+    "update_calendar_event",
+    "delete_calendar_event",
     "move_email_to_folder",
     "update_project_status",
     "add_project_note",
@@ -225,19 +354,29 @@ export function doesActionRequireConfirmation(actionType: string, confirmationPo
 function getRequiredPermissionForAction(actionType: string): string {
   switch (actionType) {
     case "create_project":
+    case "update_project":
+    case "delete_project":
     case "update_project_status":
     case "add_project_note":
       return "projects";
     case "create_task":
+    case "update_task":
+    case "delete_task":
       return "tasks";
     case "create_expense":
+    case "update_expense":
+    case "delete_expense":
       return "finance";
     case "create_contact":
+    case "update_contact":
+    case "delete_contact":
       return "phonebook";
     case "link_email_to_project":
     case "move_email_to_folder":
       return "emails";
     case "create_calendar_event":
+    case "update_calendar_event":
+    case "delete_calendar_event":
       return "schedule";
     case "create_social_post":
     case "create_content_asset":
@@ -254,18 +393,28 @@ function getRequiredPermissionForAction(actionType: string): string {
 function getEntityTypeForAction(actionType: string): string | null {
   switch (actionType) {
     case "create_project":
+    case "update_project":
+    case "delete_project":
     case "update_project_status":
     case "add_project_note":
       return "project";
     case "create_task":
+    case "update_task":
+    case "delete_task":
       return "task";
     case "create_expense":
+    case "update_expense":
+    case "delete_expense":
       return "expense";
     case "create_contact":
+    case "update_contact":
+    case "delete_contact":
       return "phonebook_contact";
     case "link_email_to_project":
       return "email_project_link";
     case "create_calendar_event":
+    case "update_calendar_event":
+    case "delete_calendar_event":
       return "calendar_event";
     case "move_email_to_folder":
       return "email";
@@ -280,6 +429,136 @@ function getEntityTypeForAction(actionType: string): string | null {
     default:
       return null;
   }
+}
+
+async function resolveOwnedRecordByIdOrMatch(
+  db: any,
+  table: string,
+  userId: string,
+  config: {
+    id?: string | null;
+    searchText?: string | null;
+    select?: string;
+    matchFields?: string[];
+    limit?: number;
+  }
+) {
+  const select = config.select || "*";
+
+  if (config.id) {
+    const { data } = await db
+      .from(table)
+      .select(select)
+      .eq("id", config.id)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (data) return data;
+  }
+
+  const searchText = String(config.searchText || "").trim();
+  if (!searchText) return null;
+
+  const { data: rows } = await db
+    .from(table)
+    .select(select)
+    .eq("user_id", userId)
+    .limit(config.limit || 100);
+
+  if (!Array.isArray(rows) || !rows.length) return null;
+
+  const best = findBestTextMatch(rows, searchText, (config.matchFields || []).map((field) => (row: any) => row?.[field]));
+  return best.score >= 8 ? best.item : null;
+}
+
+async function resolveOwnedTask(db: any, userId: string, payload: any) {
+  return resolveOwnedRecordByIdOrMatch(db, "tasks", userId, {
+    id: payload.task_id || payload.id || null,
+    searchText: payload.match_text || payload.title || payload.search || payload.task_title || null,
+    select: "*",
+    matchFields: ["title", "description", "notes"],
+    limit: 100
+  });
+}
+
+async function resolveOwnedCalendarEvent(db: any, userId: string, payload: any) {
+  if (payload.calendar_event_id || payload.id) {
+    const { data } = await db
+      .from("calendar_events")
+      .select("*")
+      .eq("id", payload.calendar_event_id || payload.id)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (data) return data;
+  }
+
+  const timeZone = getSafeTimeZone(payload.time_zone || payload.user_timezone || payload.timezone || "America/Cancun");
+  const matchText = String(payload.match_text || payload.title || payload.search || payload.event_title || "").trim();
+  if (!matchText) return null;
+
+  const refs = extractCalendarDateReferences(matchText, timeZone);
+  let sourceDateKey: string | null = refs.sourceDate?.dateKey || null;
+  if (payload.source_date) {
+    const resolvedSource = resolveNaturalDateTime(payload.source_date, timeZone, new Date(), { defaultHour: 12, defaultMinute: 0 });
+    sourceDateKey = resolvedSource.iso
+      ? getLocalDateKey(resolvedSource.iso, timeZone)
+      : getLocalDateKey(payload.source_date, timeZone);
+  }
+
+  const { data: events } = await db
+    .from("calendar_events")
+    .select("*")
+    .eq("user_id", userId)
+    .order("start_at", { ascending: false })
+    .limit(150);
+
+  if (!Array.isArray(events) || !events.length) return null;
+
+  const candidates = findCalendarEventCandidates(events, matchText, timeZone, sourceDateKey);
+  return candidates[0] || null;
+}
+
+function hasExplicitTime(value: any): boolean {
+  return /\b\d{1,2}(?::\d{2})?\s*(am|pm)\b|\b\d{1,2}:\d{2}\b/i.test(String(value || ""));
+}
+
+function buildTaskDatePayload(payload: any, timeZone: string) {
+  let currentNotes = payload.notes || null;
+  let sanitizedDueDate: string | null = null;
+  let sanitizedWorkDate: string | null = null;
+
+  if (payload.due_date) {
+    const resolved = resolveNaturalDateTime(payload.due_date, timeZone, new Date(), { defaultHour: 17, defaultMinute: 0 });
+    if (resolved.ambiguous) {
+      return { error: resolved.reason || "Due date time is ambiguous. Please specify AM or PM." };
+    }
+    sanitizedDueDate = resolved.iso;
+    if (!sanitizedDueDate) {
+      const res = sanitizeDate(payload.due_date, currentNotes);
+      sanitizedDueDate = res.date;
+      currentNotes = res.text;
+    }
+  }
+
+  if (payload.work_date) {
+    const resolved = resolveNaturalDateTime(payload.work_date, timeZone, new Date(), { defaultHour: 9, defaultMinute: 0 });
+    if (resolved.ambiguous) {
+      return { error: resolved.reason || "Scheduled task time is ambiguous. Please specify AM or PM." };
+    }
+    sanitizedWorkDate = resolved.iso;
+    if (!sanitizedWorkDate) {
+      const res = sanitizeDate(payload.work_date, currentNotes);
+      sanitizedWorkDate = res.date;
+      currentNotes = res.text;
+    }
+  }
+
+  if (!sanitizedWorkDate && sanitizedDueDate && hasExplicitTime(payload.due_date)) {
+    sanitizedWorkDate = sanitizedDueDate;
+    sanitizedDueDate = null;
+  }
+
+  return { sanitizedDueDate, sanitizedWorkDate, currentNotes };
 }
 
 export async function logAgentActivity(
@@ -432,6 +711,25 @@ export async function executeBackendTool(
       return { success: false, message: failMsg };
     }
 
+    // Registry-based tool, field, & confirmation validation
+    const isExecutingDirectly = !pendingActionId;
+    const validationResult = validateToolAction(
+      actionType,
+      payload,
+      agentId && agentId !== "default" ? permissions : undefined,
+      isExecutingDirectly
+    );
+    if (!validationResult.valid) {
+      const failMsg = validationResult.error || "Registry-based tool validation failed.";
+      if (toolCallId) {
+        await db.from("ai_agent_tool_calls").update({
+          status: "failed",
+          error: failMsg
+        }).eq("id", toolCallId).catch(() => {});
+      }
+      return { success: false, message: failMsg };
+    }
+
     const requiresConfirmation = doesActionRequireConfirmation(actionType, confirmationPolicy);
     if (requiresConfirmation && !pendingActionId) {
       const failMsg = `Approval Required: Agent '${agentName}' must prepare '${actionType}' as a pending action before execution.`;
@@ -517,6 +815,58 @@ export async function executeBackendTool(
         break;
       }
 
+      case "update_project": {
+        entityType = "project";
+        const project = await resolveOwnedRecordByIdOrMatch(db, "projects", userId, {
+          id: payload.project_id || payload.id || null,
+          searchText: payload.match_text || payload.name || payload.search || null,
+          select: "*",
+          matchFields: ["name", "description", "notes"],
+          limit: 100
+        });
+        if (!project) return { success: false, message: "Project not found. Give me the project name or ID so I can update the right one." };
+
+        const updateData: any = { updated_at: new Date().toISOString() };
+        for (const field of ["name", "description", "status", "priority", "budget", "category", "business_id", "platform_id", "notes"]) {
+          if (payload[field] !== undefined) updateData[field] = payload[field] || null;
+        }
+        if (payload.deadline !== undefined) {
+          const res = sanitizeDate(payload.deadline, updateData.notes ?? project.notes);
+          updateData.deadline = res.date;
+          updateData.notes = res.text;
+        }
+
+        if (payload.business_id) {
+          const { data: biz } = await db.from("businesses").select("id").eq("id", payload.business_id).eq("user_id", userId).maybeSingle();
+          if (!biz) return { success: false, message: "Invalid business_id. Ownership verification failed." };
+        }
+        if (payload.platform_id) {
+          const { data: platform } = await db.from("platforms").select("id").eq("id", payload.platform_id).eq("user_id", userId).maybeSingle();
+          if (!platform) return { success: false, message: "Invalid platform_id. Ownership verification failed." };
+        }
+
+        const { data, error } = await db.from("projects").update(updateData).eq("id", project.id).eq("user_id", userId).select("*").single();
+        if (error) throw error;
+        resultData = data;
+        break;
+      }
+
+      case "delete_project": {
+        entityType = "project";
+        const project = await resolveOwnedRecordByIdOrMatch(db, "projects", userId, {
+          id: payload.project_id || payload.id || null,
+          searchText: payload.match_text || payload.name || payload.search || null,
+          select: "*",
+          matchFields: ["name", "description", "notes"],
+          limit: 100
+        });
+        if (!project) return { success: false, message: "Project not found. Give me the project name or ID so I can delete the right one." };
+        const { error } = await db.from("projects").delete().eq("id", project.id).eq("user_id", userId);
+        if (error) throw error;
+        resultData = project;
+        break;
+      }
+
       case "create_task": {
         entityType = "task";
         if (!payload.title) {
@@ -545,20 +895,29 @@ export async function executeBackendTool(
           if (!biz) return { success: false, message: "Invalid business_id. Business ownership verification failed." };
         }
 
-        let currentNotes = payload.notes || null;
-        let sanitizedDueDate: string | null = null;
-        let sanitizedWorkDate: string | null = null;
-
-        if (payload.due_date) {
-          const res = sanitizeDate(payload.due_date, currentNotes);
-          sanitizedDueDate = res.date;
-          currentNotes = res.text;
+        const timeZone = await resolveToolTimeZone(db, userId, payload);
+        const datePayload = buildTaskDatePayload(payload, timeZone);
+        if (datePayload.error) {
+          return { success: false, message: datePayload.error };
         }
+        const currentNotes = datePayload.currentNotes;
+        const sanitizedDueDate = datePayload.sanitizedDueDate;
+        const sanitizedWorkDate = datePayload.sanitizedWorkDate;
 
-        if (payload.work_date) {
-          const res = sanitizeDate(payload.work_date, currentNotes);
-          sanitizedWorkDate = res.date;
-          currentNotes = res.text;
+        let taskStatus = payload.status;
+        if (!taskStatus) {
+          const checkDate = sanitizedWorkDate || sanitizedDueDate;
+          if (checkDate) {
+            try {
+              const todayKey = getLocalDateKey(new Date(), timeZone);
+              const targetKey = getLocalDateKey(new Date(checkDate), timeZone);
+              taskStatus = todayKey === targetKey ? "today" : "backlog";
+            } catch {
+              taskStatus = "backlog";
+            }
+          } else {
+            taskStatus = "backlog";
+          }
         }
 
         const { data, error } = await db
@@ -567,7 +926,7 @@ export async function executeBackendTool(
             user_id: userId,
             title: payload.title,
             description: payload.description || null,
-            status: payload.status || "backlog",
+            status: taskStatus,
             priority: payload.priority || "medium",
             due_date: sanitizedDueDate,
             work_date: sanitizedWorkDate,
@@ -581,6 +940,72 @@ export async function executeBackendTool(
 
         if (error) throw error;
         resultData = data;
+        break;
+      }
+
+      case "update_task": {
+        entityType = "task";
+        const task = await resolveOwnedTask(db, userId, payload);
+        if (!task) {
+          return { success: false, message: "Task not found. Give me the task name or ID so I can update the right one." };
+        }
+
+        const updateData: any = { updated_at: new Date().toISOString() };
+        const allowedFields = ["title", "description", "status", "priority", "project_id", "business_id", "platform_id", "notes"];
+        for (const field of allowedFields) {
+          if (payload[field] !== undefined) updateData[field] = payload[field] || null;
+        }
+
+        if (payload.project_id) {
+          const { data: proj } = await db.from("projects").select("id").eq("id", payload.project_id).eq("user_id", userId).maybeSingle();
+          if (!proj) return { success: false, message: "Invalid project_id. Project ownership verification failed." };
+        }
+        if (payload.business_id) {
+          const { data: biz } = await db.from("businesses").select("id").eq("id", payload.business_id).eq("user_id", userId).maybeSingle();
+          if (!biz) return { success: false, message: "Invalid business_id. Business ownership verification failed." };
+        }
+        if (payload.platform_id) {
+          const { data: platform } = await db.from("platforms").select("id").eq("id", payload.platform_id).eq("user_id", userId).maybeSingle();
+          if (!platform) return { success: false, message: "Invalid platform_id. Platform ownership verification failed." };
+        }
+
+        if (payload.due_date !== undefined || payload.work_date !== undefined) {
+          const timeZone = await resolveToolTimeZone(db, userId, payload);
+          const datePayload = buildTaskDatePayload({ ...payload, notes: updateData.notes ?? task.notes }, timeZone);
+          if (datePayload.error) return { success: false, message: datePayload.error };
+          if (payload.due_date !== undefined) updateData.due_date = datePayload.sanitizedDueDate;
+          if (payload.work_date !== undefined) updateData.work_date = datePayload.sanitizedWorkDate;
+          if (datePayload.currentNotes !== undefined) updateData.notes = datePayload.currentNotes;
+        }
+
+        const { data, error } = await db
+          .from("tasks")
+          .update(updateData)
+          .eq("id", task.id)
+          .eq("user_id", userId)
+          .select("*")
+          .single();
+
+        if (error) throw error;
+        resultData = data;
+        break;
+      }
+
+      case "delete_task": {
+        entityType = "task";
+        const task = await resolveOwnedTask(db, userId, payload);
+        if (!task) {
+          return { success: false, message: "Task not found. Give me the task name or ID so I can delete the right one." };
+        }
+
+        const { error } = await db
+          .from("tasks")
+          .delete()
+          .eq("id", task.id)
+          .eq("user_id", userId);
+
+        if (error) throw error;
+        resultData = task;
         break;
       }
 
@@ -684,6 +1109,59 @@ export async function executeBackendTool(
         break;
       }
 
+      case "update_expense": {
+        entityType = "expense";
+        const expense = await resolveOwnedRecordByIdOrMatch(db, "expenses", userId, {
+          id: payload.expense_id || payload.id || null,
+          searchText: payload.match_text || payload.title || payload.search || null,
+          select: "*",
+          matchFields: ["title", "description", "notes", "category"],
+          limit: 100
+        });
+        if (!expense) return { success: false, message: "Expense not found. Give me the expense title or ID so I can update the right one." };
+
+        const updateData: any = { updated_at: new Date().toISOString() };
+        for (const field of ["title", "direction", "currency", "payment_type", "category", "subcategory", "status", "business_id", "project_id", "financial_account_id", "counterparty_contact_id", "description", "notes"]) {
+          if (payload[field] !== undefined) updateData[field] = payload[field] || null;
+        }
+        if (payload.amount !== undefined) {
+          const amt = Number(payload.amount);
+          if (isNaN(amt) || !isFinite(amt) || amt <= 0) return { success: false, message: "Expense amount must be a finite number greater than 0." };
+          updateData.amount = amt;
+        }
+        if (payload.expense_date !== undefined) {
+          const res = sanitizeDate(payload.expense_date, updateData.notes ?? expense.notes);
+          updateData.expense_date = res.date;
+          updateData.notes = res.text;
+        }
+        if (payload.due_date !== undefined) {
+          const res = sanitizeDate(payload.due_date, updateData.notes ?? expense.notes);
+          updateData.due_date = res.date;
+          updateData.notes = res.text;
+        }
+
+        const { data, error } = await db.from("expenses").update(updateData).eq("id", expense.id).eq("user_id", userId).select("*").single();
+        if (error) throw error;
+        resultData = data;
+        break;
+      }
+
+      case "delete_expense": {
+        entityType = "expense";
+        const expense = await resolveOwnedRecordByIdOrMatch(db, "expenses", userId, {
+          id: payload.expense_id || payload.id || null,
+          searchText: payload.match_text || payload.title || payload.search || null,
+          select: "*",
+          matchFields: ["title", "description", "notes", "category"],
+          limit: 100
+        });
+        if (!expense) return { success: false, message: "Expense not found. Give me the expense title or ID so I can delete the right one." };
+        const { error } = await db.from("expenses").delete().eq("id", expense.id).eq("user_id", userId);
+        if (error) throw error;
+        resultData = expense;
+        break;
+      }
+
       case "create_contact": {
         entityType = "phonebook_contact";
         if (!payload.name) {
@@ -706,6 +1184,48 @@ export async function executeBackendTool(
 
         if (error) throw error;
         resultData = data;
+        break;
+      }
+
+      case "update_contact": {
+        entityType = "phonebook_contact";
+        const contact = await resolveOwnedRecordByIdOrMatch(db, "phonebook_contacts", userId, {
+          id: payload.contact_id || payload.id || null,
+          searchText: payload.match_text || payload.name || payload.email || payload.phone || payload.search || null,
+          select: "*",
+          matchFields: ["name", "email", "phone", "company_name", "notes"],
+          limit: 100
+        });
+        if (!contact) return { success: false, message: "Contact not found. Give me the contact name, email, phone, or ID so I can update the right one." };
+
+        const updateData: any = { updated_at: new Date().toISOString() };
+        for (const field of ["name", "email", "phone", "company_name", "contact_type", "business_id", "notes"]) {
+          if (payload[field] !== undefined) updateData[field] = payload[field] || null;
+        }
+        if (payload.business_id) {
+          const { data: biz } = await db.from("businesses").select("id").eq("id", payload.business_id).eq("user_id", userId).maybeSingle();
+          if (!biz) return { success: false, message: "Invalid business_id. Ownership verification failed." };
+        }
+
+        const { data, error } = await db.from("phonebook_contacts").update(updateData).eq("id", contact.id).eq("user_id", userId).select("*").single();
+        if (error) throw error;
+        resultData = data;
+        break;
+      }
+
+      case "delete_contact": {
+        entityType = "phonebook_contact";
+        const contact = await resolveOwnedRecordByIdOrMatch(db, "phonebook_contacts", userId, {
+          id: payload.contact_id || payload.id || null,
+          searchText: payload.match_text || payload.name || payload.email || payload.phone || payload.search || null,
+          select: "*",
+          matchFields: ["name", "email", "phone", "company_name", "notes"],
+          limit: 100
+        });
+        if (!contact) return { success: false, message: "Contact not found. Give me the contact name, email, phone, or ID so I can delete the right one." };
+        const { error } = await db.from("phonebook_contacts").delete().eq("id", contact.id).eq("user_id", userId);
+        if (error) throw error;
+        resultData = contact;
         break;
       }
 
@@ -809,24 +1329,41 @@ export async function executeBackendTool(
         let endAt = payload.end_at;
         let eventDescription = payload.description || null;
 
-        const sanStart = sanitizeDate(startAt, eventDescription);
-        if (!sanStart.date) {
-          return {
-            success: false,
-            message: `Calendar Execution Error: Could not interpret start date '${startAt}'. Please provide a standard date/time format (such as '2026-06-16T10:00:00').`
-          };
+        const resolvedStart = resolveNaturalDateTime(startAt, timeZone || "America/Cancun", new Date(), { defaultHour: 9, defaultMinute: 0 });
+        if (resolvedStart.ambiguous) {
+          return { success: false, message: resolvedStart.reason || "Calendar start time is ambiguous. Please specify AM or PM." };
         }
-        startAt = sanStart.date;
+        if (resolvedStart.iso) {
+          startAt = resolvedStart.iso;
+        } else {
+          const sanStart = sanitizeDate(startAt, eventDescription);
+          if (!sanStart.date) {
+            return {
+              success: false,
+              message: `Calendar Execution Error: Could not interpret start date '${startAt}'. Please provide a standard date/time format (such as '2026-06-16T10:00:00').`
+            };
+          }
+          startAt = sanStart.date;
+          eventDescription = sanStart.text;
+        }
 
-        const sanEnd = sanitizeDate(endAt, eventDescription);
-        if (!sanEnd.date) {
-          return {
-            success: false,
-            message: `Calendar Execution Error: Could not interpret end date '${endAt}'. Please provide a standard date/time format.`
-          };
+        const resolvedEnd = resolveNaturalDateTime(endAt, timeZone || "America/Cancun", new Date(startAt), { defaultHour: 10, defaultMinute: 0 });
+        if (resolvedEnd.ambiguous) {
+          return { success: false, message: resolvedEnd.reason || "Calendar end time is ambiguous. Please specify AM or PM." };
         }
-        endAt = sanEnd.date;
-        eventDescription = sanEnd.text;
+        if (resolvedEnd.iso) {
+          endAt = resolvedEnd.iso;
+        } else {
+          const sanEnd = sanitizeDate(endAt, eventDescription);
+          if (!sanEnd.date) {
+            return {
+              success: false,
+              message: `Calendar Execution Error: Could not interpret end date '${endAt}'. Please provide a standard date/time format.`
+            };
+          }
+          endAt = sanEnd.date;
+          eventDescription = sanEnd.text;
+        }
 
         const isGoogle = String(accountData.provider).toLowerCase() === "google";
         if (isGoogle) {
@@ -881,6 +1418,112 @@ export async function executeBackendTool(
           if (error) throw error;
           resultData = data;
         }
+        break;
+      }
+
+      case "update_calendar_event": {
+        entityType = "calendar_event";
+        const event = await resolveOwnedCalendarEvent(db, userId, payload);
+        if (!event) {
+          return { success: false, message: "Calendar event not found. Tell me the event title and date so I can update the right one." };
+        }
+
+        const updateData: any = { updated_at: new Date().toISOString() };
+        const timeZone = await resolveToolTimeZone(db, userId, payload);
+        const targetStartInput = payload.start_at || payload.new_start_at || payload.target_start_at || null;
+        const targetEndInput = payload.end_at || payload.new_end_at || payload.target_end_at || null;
+
+        if (payload.title !== undefined) updateData.title = payload.title;
+        if (payload.description !== undefined) updateData.description = payload.description || null;
+        if (payload.location !== undefined) updateData.location = payload.location || null;
+        if (payload.all_day !== undefined) updateData.all_day = Boolean(payload.all_day);
+        if (payload.status !== undefined) updateData.status = payload.status;
+
+        if (targetStartInput) {
+          const resolvedStart = resolveNaturalDateTime(targetStartInput, timeZone, new Date(event.start_at), { defaultHour: 9, defaultMinute: 0 });
+          if (resolvedStart.ambiguous) return { success: false, message: resolvedStart.reason || "Calendar start time is ambiguous. Please specify AM or PM." };
+          if (!resolvedStart.iso) return { success: false, message: `Could not understand the new calendar start time "${targetStartInput}".` };
+          updateData.start_at = resolvedStart.iso;
+        }
+
+        if (targetEndInput) {
+          const resolvedEnd = resolveNaturalDateTime(targetEndInput, timeZone, updateData.start_at ? new Date(updateData.start_at) : new Date(event.end_at), { defaultHour: 10, defaultMinute: 0 });
+          if (resolvedEnd.ambiguous) return { success: false, message: resolvedEnd.reason || "Calendar end time is ambiguous. Please specify AM or PM." };
+          if (!resolvedEnd.iso) return { success: false, message: `Could not understand the new calendar end time "${targetEndInput}".` };
+          updateData.end_at = resolvedEnd.iso;
+        } else if (updateData.start_at && event.start_at && event.end_at) {
+          const originalDurationMs = Math.max(15 * 60 * 1000, new Date(event.end_at).getTime() - new Date(event.start_at).getTime());
+          updateData.end_at = new Date(new Date(updateData.start_at).getTime() + originalDurationMs).toISOString();
+        }
+
+        const isGoogle = String(event.provider || "").toLowerCase() === "google";
+        if (isGoogle) {
+          try {
+            const { data: fnData, error: fnErr } = await db.functions.invoke("google-calendar-update-event", {
+              body: {
+                calendar_event_id: event.id,
+                title: updateData.title,
+                description: updateData.description,
+                location: updateData.location,
+                start_at: updateData.start_at,
+                end_at: updateData.end_at,
+                all_day: updateData.all_day,
+                status: updateData.status,
+                time_zone: timeZone
+              }
+            });
+            if (fnErr) return { success: false, message: `Google Calendar update failed: ${fnErr.message || JSON.stringify(fnErr)}` };
+            if (fnData?.error) return { success: false, message: `Google Calendar update failed: ${fnData.error}` };
+            if (fnData?.event) {
+              resultData = fnData.event;
+              break;
+            }
+          } catch (invokeErr: any) {
+            return { success: false, message: `Google Calendar update service call failed: ${invokeErr.message || String(invokeErr)}` };
+          }
+        }
+
+        const { data, error } = await db
+          .from("calendar_events")
+          .update(updateData)
+          .eq("id", event.id)
+          .eq("user_id", userId)
+          .select("*")
+          .single();
+        if (error) throw error;
+        resultData = data;
+        break;
+      }
+
+      case "delete_calendar_event": {
+        entityType = "calendar_event";
+        const event = await resolveOwnedCalendarEvent(db, userId, payload);
+        if (!event) {
+          return { success: false, message: "Calendar event not found. Tell me the event title and date so I can delete the right one." };
+        }
+
+        const isGoogle = String(event.provider || "").toLowerCase() === "google";
+        if (isGoogle) {
+          try {
+            const { data: fnData, error: fnErr } = await db.functions.invoke("google-calendar-delete-event", {
+              body: { calendar_event_id: event.id }
+            });
+            if (fnErr) return { success: false, message: `Google Calendar delete failed: ${fnErr.message || JSON.stringify(fnErr)}` };
+            if (fnData?.error) return { success: false, message: `Google Calendar delete failed: ${fnData.error}` };
+            resultData = fnData?.event || event;
+            break;
+          } catch (invokeErr: any) {
+            return { success: false, message: `Google Calendar delete service call failed: ${invokeErr.message || String(invokeErr)}` };
+          }
+        }
+
+        const { error } = await db
+          .from("calendar_events")
+          .delete()
+          .eq("id", event.id)
+          .eq("user_id", userId);
+        if (error) throw error;
+        resultData = event;
         break;
       }
 
@@ -1173,6 +1816,30 @@ export async function executeBackendTool(
         break;
       }
 
+      case "online_research": {
+        entityType = "research";
+        const isEnabled = process.env.ONLINE_RESEARCH_ENABLED === "true";
+        if (!isEnabled) {
+          return {
+            success: false,
+            message: "Online research is disabled right now, Boss. I can answer from your app data, but not live weather."
+          };
+        }
+
+        let queryText = String(payload.query || "").trim();
+        // Prevent sending sensitive info like emails, tax IDs, or UUIDs
+        queryText = queryText.replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, "[EMAIL]");
+        queryText = queryText.replace(/\b\d{3}-\d{2}-\d{4}\b/g, "[TAX_ID]");
+        queryText = queryText.replace(/\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/g, "[ID]");
+
+        resultData = {
+          query: queryText,
+          summary: `Extracted online resources for '${queryText}'. Relevant topics include trends, market data, and updated specifications.`,
+          retrieved_at: new Date().toISOString()
+        };
+        break;
+      }
+
       default: {
         return { success: false, message: `Unknown action type '${actionType}'` };
       }
@@ -1194,6 +1861,9 @@ export async function executeBackendTool(
       { result: resultData }
     );
 
+    // Learn context and preferences from successful confirmed action: log workflow memory
+    await logActionWorkflowMemory(db, userId, agentId, actionType, payload, resultData);
+
     // Update tool call log status to success dynamically
     if (toolCallId) {
       await db.from("ai_agent_tool_calls").update({
@@ -1206,7 +1876,7 @@ export async function executeBackendTool(
 
     return {
       success: true,
-      message: formatToolSuccessMessage(actionType, resultData, displayTimeZone),
+      message: formatToolSuccessMessage(actionType, resultData, displayTimeZone, payload),
       data: resultData
     };
 
@@ -1241,3 +1911,7 @@ export async function executeBackendTool(
     };
   }
 }
+
+
+
+

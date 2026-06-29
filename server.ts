@@ -2,7 +2,9 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { createClient } from "@supabase/supabase-js";
-import { doesActionRequireConfirmation, executeBackendTool, logAgentActivity } from "./server/tools.js";
+import { doesActionRequireConfirmation, executeBackendTool, logAgentActivity, validateToolAction } from "./server/tools.js";
+import { extractCalendarDateReferences, findCalendarEventCandidates } from "./server/agentDomainUtils.js";
+import { buildRuntimeContext, formatRuntimeContextPrompt, dynamicContextRouter, compileToolsSystemPrompt } from "./server/agentRegistry.js";
 
 type ServerRequest = any;
 type ServerResponse = any;
@@ -651,18 +653,10 @@ function addDaysToLocalDateKey(dateKey: string, days: number, timeZone: string =
 }
 
 function getRequestedCalendarDate(message: string, timeZone: string = "America/Cancun") {
-  const msg = String(message || "").toLowerCase();
-  const todayKey = getLocalDateKey(new Date(), timeZone);
-
-  if (/\btomorrow\b|\btmrw\b/.test(msg)) {
-    return { label: "tomorrow", dateKey: addDaysToLocalDateKey(todayKey, 1, timeZone) };
-  }
-
-  if (/\btoday\b/.test(msg)) {
-    return { label: "today", dateKey: todayKey };
-  }
-
-  return null;
+  const refs = extractCalendarDateReferences(message, timeZone);
+  return refs.requestedDate
+    ? { label: refs.requestedDate.label, dateKey: refs.requestedDate.dateKey }
+    : null;
 }
 
 function formatLocalDateTime(value: any, timeZone: string = "America/Cancun"): string {
@@ -682,6 +676,13 @@ function formatLocalDateTime(value: any, timeZone: string = "America/Cancun"): s
 }
 
 function buildOptimizedDatabaseContext(ctxObj: any, currentPath: string, message: string, activeTimeZone: string = "America/Cancun"): string {
+  const combined = dynamicContextRouter(ctxObj, message, currentPath, activeTimeZone);
+  const hardCap = 4000;
+  if (combined.length <= hardCap) return combined;
+  return combined.substring(0, hardCap - 15) + " (TRUNCATED)";
+}
+
+function _unused_buildOptimizedDatabaseContext(ctxObj: any, currentPath: string, message: string, activeTimeZone: string = "America/Cancun"): string {
   if (!ctxObj) return "No database context available.";
 
   const path = String(currentPath || "").toLowerCase();
@@ -792,7 +793,10 @@ function buildOptimizedDatabaseContext(ctxObj: any, currentPath: string, message
       }
       break;
     case "calendar": {
-      const requestedDate = getRequestedCalendarDate(message, activeTimeZone);
+      const dateRefs = extractCalendarDateReferences(message, activeTimeZone);
+      const requestedDate = dateRefs.requestedDate;
+      const sourceDate = dateRefs.sourceDate;
+      const targetDate = dateRefs.targetDate;
       const allEvents = Array.isArray(ctxObj.calendar_events) ? ctxObj.calendar_events : [];
       const allTasks = Array.isArray(ctxObj.tasks) ? ctxObj.tasks : [];
 
@@ -801,8 +805,19 @@ function buildOptimizedDatabaseContext(ctxObj: any, currentPath: string, message
       );
 
       const matchingEvents = requestedDate
-        ? sortedEvents.filter((e: any) => getLocalDateKey(e.start_at, activeTimeZone) === requestedDate.dateKey)
+        ? sortedEvents.filter((e: any) => e.start_at && getLocalDateKey(e.start_at, activeTimeZone) === requestedDate.dateKey)
         : sortedEvents.filter((e: any) => new Date(e.end_at || e.start_at).getTime() >= Date.now()).slice(0, 10);
+
+      const sourceEvents = sourceDate
+        ? sortedEvents.filter((e: any) => e.start_at && getLocalDateKey(e.start_at, activeTimeZone) === sourceDate.dateKey)
+        : [];
+
+      const candidateEvents = findCalendarEventCandidates(
+        sortedEvents,
+        message,
+        activeTimeZone,
+        sourceDate?.dateKey || requestedDate?.dateKey || null
+      );
 
       const matchingTasks = requestedDate
         ? allTasks.filter((t: any) => {
@@ -814,16 +829,30 @@ function buildOptimizedDatabaseContext(ctxObj: any, currentPath: string, message
       parts.push(
         `Calendar Date Logic:\n` +
         `- Current local date: ${getLocalDateKey(new Date(), activeTimeZone)}\n` +
-        `- Requested date: ${requestedDate ? `${requestedDate.label} = ${requestedDate.dateKey}` : "not specified; showing upcoming future events"}\n` +
+        `- Source date: ${sourceDate ? `${sourceDate.label} = ${sourceDate.dateKey}` : "not specified"}\n` +
+        `- Target/requested date: ${requestedDate ? `${requestedDate.label} = ${requestedDate.dateKey}` : "not specified; showing upcoming future events"}\n` +
+        `- For move/reschedule requests, find the source event first, then create an update_calendar_event action using that event ID.\n` +
         `- Never describe events outside the requested local date as ${requestedDate?.label || "the requested day"}.`
       );
 
+      if (sourceEvents.length) {
+        parts.push(`Source Date Events (${sourceDate?.label} ${sourceDate?.dateKey}):\n${sourceEvents.slice(0, 10).map((e: any) =>
+          `- ${e.title} [ID: ${e.id}, Local Start: ${formatLocalDateTime(e.start_at, activeTimeZone)}, Local End: ${formatLocalDateTime(e.end_at, activeTimeZone)}]`
+        ).join('\n')}`);
+      }
+
+      if (candidateEvents.length) {
+        parts.push(`Likely Calendar Event Matches:\n${candidateEvents.map((e: any) =>
+          `- ${e.title} [ID: ${e.id}, Local Date: ${e._eventDateKey}, Local Start: ${formatLocalDateTime(e.start_at, activeTimeZone)}, Match Score: ${e._matchScore}]`
+        ).join('\n')}`);
+      }
+
       if (matchingEvents.length) {
-        parts.push(`Matching Calendar Events:\n${matchingEvents.map((e: any) =>
+        parts.push(`Target/Matching Calendar Events:\n${matchingEvents.map((e: any) =>
           `- ${e.title} [ID: ${e.id}, Local Start: ${formatLocalDateTime(e.start_at, activeTimeZone)}, Local End: ${formatLocalDateTime(e.end_at, activeTimeZone)}]`
         ).join('\n')}`);
       } else if (requestedDate) {
-        parts.push(`Matching Calendar Events for ${requestedDate.label} (${requestedDate.dateKey}): none found.`);
+        parts.push(`Target/Matching Calendar Events for ${requestedDate.label} (${requestedDate.dateKey}): none found.`);
       }
 
       if (matchingTasks.length) {
@@ -877,7 +906,7 @@ function buildOptimizedDatabaseContext(ctxObj: any, currentPath: string, message
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
   app.use(express.json() as any);
 
@@ -1385,8 +1414,36 @@ Do not write intro or comments, return only the raw summary text.`;
         minute: "2-digit",
         hour12: true
       });  
+      const yesterdayDate = new Date();
+      yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+      const yesterdayStr = getLocalDateKey(yesterdayDate, activeTimeZone);
+
+      const todayStr = getLocalDateKey(new Date(), activeTimeZone);
+
+      const tomorrowDate = new Date();
+      tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+      const tomorrowStr = getLocalDateKey(tomorrowDate, activeTimeZone);
+      const allowedToolsArray: string[] = Array.isArray(parsedContextObj?.agent?.enabled_tools)
+        ? parsedContextObj.agent.enabled_tools
+        : (agentTools ? agentTools.split(",").map(t => t.trim()) : []);
+
+      const runtimeContextObj = buildRuntimeContext(
+        user.id,
+        agent_id || "emily-default",
+        conversationId,
+        activeTimeZone,
+        current_page || "dashboard",
+        parsedContextObj,
+        allowedToolsArray
+      );
+
+      const runtimeContextPrompt = formatRuntimeContextPrompt(runtimeContextObj);
+      const compileToolsPrompt = compileToolsSystemPrompt(allowedToolsArray);
+
       // Construct highly optimized, distinctive prompt containing all 7 components of the Hybrid Context Package
       const systemPrompt = `You are ${agentProfile.name}, Boss's AI Assistant inside Neth Manager.
+
+${runtimeContextPrompt}
       
 ### HYBRID CONTEXT PACKAGE ###
 [AGENT PROFILE]
@@ -1409,11 +1466,18 @@ ${optimizedDatabaseContextStr}
 ${conversationSummaryStr}
 
 [CURRENT DATE AND TIME]
-Current local time for Boss: ${currentDateContext}
-Timezone: ${activeTimeZone}
+- user_timezone: ${activeTimeZone}
+- current local date: ${todayStr} (resolved in timezone ${activeTimeZone})
+- current local time: ${currentDateContext}
+- resolved relative dates in Boss's zone:
+  - "yesterday": ${yesterdayStr}
+  - "today": ${todayStr}
+  - "tomorrow": ${tomorrowStr}
+
 CRITICAL DATE CALCULATION RULES:
 - For ALL calendar actions, always calculate the start_at and end_at based on the current local date/time from ${activeTimeZone}.
 - When the user says "tomorrow", "next Friday", "tonight", "morning", etc., resolve it explicitly to an exact local ISO string in the ${activeTimeZone} timezone.
+- PRESERVE LOCAL CLOCK TIME: Never let timezone conversions shift the clock of the user's intended time. If the user says "4:20 PM", the resolved calendar event or task must be scheduled exactly at "16:20:00" in the user's local timezone. Do NOT shift 4:20 PM to 8:00 PM or offset the clock time itself.
 - If the date or time is ambiguous (e.g. they say "let's meet at 5" without specifying AM/PM or date, or they just say "some time next week"), YOU MUST ASK ONE SHORT QUESTION to clarify instead of preparing the action. DO NOT create calendar pending actions with guessed or placeholder dates/times.
 - Default calendar event duration is 30 minutes if unspecified.
 - Never use Z/UTC for local calendar events unless Boss explicitly requested UTC.
@@ -1462,6 +1526,9 @@ ${agentsListStr}
 - When creating a 'create_calendar_event' pending action, you MUST always include \`time_zone: "${activeTimeZone}"\` inside the payload.
 - When a pending action is created, confirmed, executed, failed, or skipped, inform the user with a concise message. For delegated tasks, state who is working on it and its status.
 
+### AVAILABLE SYSTEMS TOOLS & METHOD REGISTRY SIGNATURE SPECIFICATIONS ###
+${compileToolsPrompt}
+
 Write-action Guidelines (CRITICAL):
 
 - Apply the confirmation rule ONLY to explicit write actions: create, add, schedule, book, move, reschedule, update, edit, delete, cancel, or save. Never apply it to read-only questions.
@@ -1469,18 +1536,32 @@ Write-action Guidelines (CRITICAL):
 - DO NOT claim that you have completed or saved the action. Just say you have prepared it using precisely: "I prepared that. Confirm it and I'll apply it."
 - Valid Action Types are:
   1. create_project (payload: { name: string, description?: string, status?: string, priority?: string, deadline?: string, budget?: number, category?: string })
-  2. create_task (payload: { title: string, description?: string, status?: string, priority?: string, due_date?: string, work_date?: string, project_id?: string, business_id?: string, platform_id?: string, notes?: string })
-  3. create_expense (payload: { title: string, amount: number, direction: "in"|"out", payment_type?: string, category?: string, business_id?: string, project_id?: string })
-  4. create_contact (payload: { name: string, email?: string, phone?: string, company_name?: string, contact_type?: string, notes?: string })
-  5. link_email_to_project (payload: { email_id: string, project_id: string })
-  6. create_calendar_event (payload: { title: string, start_at: string, end_at: string, time_zone: string, location?: string, description?: string })
-  7. move_email_to_folder (payload: { email_id: string, folder_id: string })
-  8. update_project_status (payload: { project_id: string, status: string })
-  9. add_project_note (payload: { project_id: string, notes: string })
-  10. create_social_post (payload: { provider: string, title?: string, caption?: string, project_id?: string, social_profile_id?: string })
-  11. create_content_asset (payload: { title: string, asset_type: string, file_path: string, project_id?: string })
-  12. create_agent_task (payload: { title: string, task_type: string, assigned_agent_id?: string, priority?: string, input_json?: { user_timezone?: string } & any })
-  13. request_approval (payload: { entity_type: string, action_type: string, summary: string, risk_level?: string, entity_id?: string, payload?: any })
+  2. update_project (payload: { project_id?: string, match_text?: string, name?: string, description?: string, status?: string, priority?: string, deadline?: string, budget?: number, category?: string, business_id?: string, platform_id?: string, notes?: string })
+  3. delete_project (payload: { project_id?: string, match_text?: string })
+  4. update_project_status (payload: { project_id?: string, match_text?: string, status: string })
+  5. add_project_note (payload: { project_id?: string, match_text?: string, notes: string })
+    6. create_task (payload: { title: string, description?: string, status?: string, priority?: string, due_date?: string, work_date?: string, project_id?: string, business_id?: string, platform_id?: string, notes?: string, time_zone?: string })
+     - For scheduled tasks with a specific day or time, put the exact local date/time in work_date.
+     - Use due_date only for deadlines. Do not put appointment/scheduled times in due_date.
+     - If Boss says "today at 4:20 PM", preserve exactly that time in work_date using the active timezone.
+     - Always include time_zone: "${activeTimeZone}" when a task has any relative date or time.
+  7. update_task (payload: { task_id?: string, match_text?: string, title?: string, description?: string, status?: string, priority?: string, due_date?: string, work_date?: string, project_id?: string, business_id?: string, platform_id?: string, notes?: string, time_zone?: string })
+  8. delete_task (payload: { task_id?: string, match_text?: string })
+  9. create_calendar_event (payload: { title: string, start_at: string, end_at: string, time_zone: string, location?: string, description?: string })
+  10. update_calendar_event (payload: { calendar_event_id?: string, match_text?: string, source_date?: string, start_at?: string, end_at?: string, title?: string, location?: string, description?: string, time_zone: string })
+  11. delete_calendar_event (payload: { calendar_event_id?: string, match_text?: string, source_date?: string })
+  12. create_expense (payload: { title: string, amount: number, direction: "in"|"out", payment_type?: string, category?: string, business_id?: string, project_id?: string })
+  13. update_expense (payload: { expense_id?: string, match_text?: string, title?: string, amount?: number, status?: string, category?: string, payment_type?: string, expense_date?: string, due_date?: string, project_id?: string, business_id?: string, notes?: string })
+  14. delete_expense (payload: { expense_id?: string, match_text?: string })
+  15. create_contact (payload: { name: string, email?: string, phone?: string, company_name?: string, contact_type?: string, notes?: string })
+  16. update_contact (payload: { contact_id?: string, match_text?: string, name?: string, email?: string, phone?: string, company_name?: string, contact_type?: string, business_id?: string, notes?: string })
+  17. delete_contact (payload: { contact_id?: string, match_text?: string })
+  18. link_email_to_project (payload: { email_id: string, project_id: string })
+  19. move_email_to_folder (payload: { email_id: string, folder_id: string })
+  20. create_social_post (payload: { provider: string, title?: string, caption?: string, project_id?: string, social_profile_id?: string })
+  21. create_content_asset (payload: { title: string, asset_type: string, file_path: string, project_id?: string })
+  22. create_agent_task (payload: { title: string, task_type: string, assigned_agent_id?: string, priority?: string, input_json?: { user_timezone?: string } & any })
+  23. request_approval (payload: { entity_type: string, action_type: string, summary: string, risk_level?: string, entity_id?: string, payload?: any })
 
 Format the action JSON exactly as:
 \`\`\`json
@@ -1545,7 +1626,7 @@ Long-term Memory Guidelines (CRITICAL):
           return;
         }
 
-        const model = agentModelName || req.body.model || process.env.GOOGLE_AI_MODEL || "gemini-2.5-flash-lite";
+        const model = agentModelName || req.body.model || process.env.GOOGLE_AI_MODEL || "gemini-2.5-flash";
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
         try {
@@ -1841,25 +1922,50 @@ Long-term Memory Guidelines (CRITICAL):
         );
 
         if (requiresConfirmation) {
-          const { data: actData, error: actError } = await userSupabase
-            .from("ai_pending_actions")
-            .insert({
-              user_id: user.id,
-              agent_id: agent_id || null,
-              action_type: normalizedActionType,
-              entity_type: detectedAction.entity_type || "generic",
-              payload: detectedAction.payload || {},
-              summary: detectedAction.summary || `Prepare ${normalizedActionType}`,
-              status: "pending"
-            })
-            .select("*")
-            .single();
+          const enrichedPayload = {
+            ...(detectedAction.payload || {}),
+            _metadata: {
+              ...(detectedAction.payload?._metadata || {}),
+              conversation_id: conversationId || null,
+              source_agent_id: agent_id || null,
+              source_page: current_page || null
+            }
+          };
 
-          if (actError) {
-            console.error("Error inserting pending action from LLM output:", actError);
+          const validation = validateToolAction(
+            normalizedActionType,
+            enrichedPayload,
+            allowedToolsArray,
+            false // preparing a pending action, not executing directly
+          );
+
+          if (!validation.valid) {
+            console.warn("Manual LLM pending action failed validation:", validation.error);
+            cleanedReply = `${reply}\n\n[Action Block Failed Validation against Registry: ${validation.error}]`;
           } else {
-            createdActionRow = actData;
-            console.log("Successfully registered pending action:", actData.id);
+            const { data: actData, error: actError } = await userSupabase
+              .from("ai_pending_actions")
+              .insert({
+  user_id: user.id,
+  agent_id: agent_id || null,
+  source_agent_id: agent_id || null,
+  conversation_id: conversationId || null,
+  source_page: current_page || null,
+  action_type: normalizedActionType,
+  entity_type: detectedAction.entity_type || "generic",
+  payload: enrichedPayload,
+  summary: detectedAction.summary || `Prepare ${normalizedActionType}`,
+  status: "pending"
+})
+              .select("*")
+              .single();
+
+            if (actError) {
+              console.error("Error inserting pending action from LLM output:", actError);
+            } else {
+              createdActionRow = actData;
+              console.log("Successfully registered pending action:", actData.id);
+            }
           }
         } else {
           immediateToolResult = await executeBackendTool(
@@ -1876,7 +1982,12 @@ Long-term Memory Guidelines (CRITICAL):
           if (immediateToolResult.success) {
             cleanedReply = `Done, Boss. ${immediateToolResult.message}`;
           } else {
-            cleanedReply = `I tried, Boss, but it failed: ${immediateToolResult.message}`;
+            const msg = immediateToolResult.message || "";
+            if (msg.includes("Online research is disabled right now")) {
+              cleanedReply = msg;
+            } else {
+              cleanedReply = `I tried, Boss, but it failed: ${msg}`;
+            }
           }
         }
       }
@@ -2163,6 +2274,105 @@ Long-term Memory Guidelines (CRITICAL):
     }
   });
 
+  app.post("/api/assistant/action/create", async (req: ServerRequest, res: ServerResponse) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        res.status(401).json({ error: "Authorization header is missing or invalid." });
+        return;
+      }
+
+      if (!serverSupabase) {
+        res.status(500).json({ error: "Missing Supabase configuration." });
+        return;
+      }
+
+      const token = authHeader.substring(7);
+      const { data: { user }, error: authError } = await serverSupabase.auth.getUser(token);
+      if (authError || !user) {
+        res.status(401).json({ error: "Invalid user credentials." });
+        return;
+      }
+
+      const userSupabase = createClient(supabaseUrl!, supabaseAnonKey!, {
+        auth: { persistSession: false, autoRefreshToken: false },
+        global: { headers: { Authorization: `Bearer ${token}` } }
+      });
+
+      const { action_type, entity_type, payload, summary, conversation_id, agent_id } = req.body;
+      if (!action_type) {
+        res.status(400).json({ error: "action_type parameter is required." });
+        return;
+      }
+
+      // 1. Fetch agent's permitted/enabled tools if agent_id is provided
+      let agentEnabledTools: string[] | undefined = undefined;
+      if (agent_id && agent_id !== "default") {
+        const { data: agent } = await userSupabase
+          .from("ai_agents")
+          .select("enabled_tools")
+          .eq("id", agent_id)
+          .eq("user_id", user.id)
+          .maybeSingle();
+        if (agent) {
+          agentEnabledTools = agent.enabled_tools || [];
+        }
+      }
+
+      // Ensure conversation_id and source_page etc are properly inside payload metadata
+      const enrichedPayload = {
+        ...(payload || {}),
+        _metadata: {
+          ...(payload?._metadata || {}),
+          conversation_id: conversation_id || null,
+          source_agent_id: agent_id || null
+        }
+      };
+
+      // 2. Validate using tool registry
+      const validation = validateToolAction(
+        action_type,
+        enrichedPayload,
+        agentEnabledTools,
+        false // we are creating a pending action, so we are not executing it directly without confirmation
+      );
+
+      if (!validation.valid) {
+        res.status(400).json({ error: validation.error || "Action validation failed against registry." });
+        return;
+      }
+
+      // 3. Create public.ai_pending_actions
+      const { data: actData, error: actError } = await userSupabase
+        .from("ai_pending_actions")
+        .insert({
+  user_id: user.id,
+  agent_id: agent_id || null,
+  source_agent_id: agent_id || null,
+  conversation_id: conversation_id || null,
+  source_page: "manual_action_create",
+  action_type: action_type,
+  entity_type: entity_type || "generic",
+  payload: enrichedPayload,
+  summary: summary || `Prepare ${action_type}`,
+  status: "pending"
+})
+        .select("*")
+        .single();
+
+      if (actError) {
+        console.error("Error creating pending action manually:", actError);
+        res.status(400).json({ error: actError.message || "Failed to create pending action." });
+        return;
+      }
+
+      res.json({ success: true, action_created: true, action: actData });
+    } catch (err: any) {
+      console.error("Error in action/create endpoint:", err);
+      res.status(500).json({ error: err.message || "Server error while creating pending action." });
+    }
+  });
+
   app.post("/api/assistant/action/resolve", async (req: ServerRequest, res: ServerResponse) => {
     try {
       const authHeader = req.headers.authorization;
@@ -2397,36 +2607,7 @@ Long-term Memory Guidelines (CRITICAL):
         const taskTitle = toolResult.data?.title || action.payload?.title || "Specialist Task";
         await logToConversation(`Delegated task created for ${targetAgentName}: ${taskTitle}.`);
       } else {
-        let msg = `Done, Boss. ${action.summary || 'Action completed.'}`;
-        const result = toolResult.data;
-        if (result) {
-          if (action.action_type === 'create_calendar_event') {
-            const startStr = result.start_at || action.payload?.start_at || "";
-            let executeTimezone = getSafeTimeZone(action.payload?.time_zone || "America/Cancun");
-try {
-  if (!action.payload?.time_zone) {
-    const { data: prof } = await userSupabase
-      .from("profiles")
-      .select("timezone")
-      .eq("id", user.id)
-      .maybeSingle();
-    if (prof?.timezone) {
-      executeTimezone = getSafeTimeZone(prof.timezone);
-    }
-  }
-} catch (e) {
-  // ignore
-}
-            const formattedTime = startStr ? new Date(startStr).toLocaleString("en-US", { timeZone: executeTimezone }) : "specified time";
-            const linkStr = result.html_link ? ` Link: ${result.html_link}` : "";
-            msg += ` Event: ${result.title}, ${formattedTime}.${linkStr}`;
-          }
-          else if (action.action_type === 'create_project') msg += ` Project: ${result.name}.`;
-          else if (action.action_type === 'create_task') msg += ` Task: ${result.title}.`;
-          else if (action.action_type === 'create_expense') msg += ` Expense: ${result.title}, ${result.amount}.`;
-          else if (action.action_type === 'create_contact') msg += ` Contact: ${result.name}.`;
-        }
-        await logToConversation(msg);
+        await logToConversation(`Done, Boss. ${toolResult.message || action.summary || "Action completed."}`);
       }
 
       res.json({
@@ -2586,6 +2767,73 @@ try {
         }
       }
 
+      // Load ai_user_profiles for user
+      let userProfile: any = null;
+      let userProfileSummary = "";
+      try {
+        const { data, error } = await userSupabase
+          .from("ai_user_profiles")
+          .select("*")
+          .eq("user_id", user.id)
+          .maybeSingle();
+
+        if (!error && data) {
+          userProfile = data;
+          userProfileSummary += `Profile Summary: ${userProfile.profile_summary || "No profile summary recorded yet."}\n`;
+          userProfileSummary += `Preferences Summary: ${userProfile.preferences_summary || ""}\n`;
+          userProfileSummary += `Personal Context Summary: ${userProfile.personal_context_summary || ""}\n`;
+          userProfileSummary += `Business Context Summary: ${userProfile.business_context_summary || ""}`;
+        } else {
+          userProfileSummary = `Name: Boss\nEmail: ${user.email}`;
+        }
+      } catch (e) {
+        console.error("Error loading user profile for specialist run:", e);
+        userProfileSummary = `Name: Boss\nEmail: ${user.email}`;
+      }
+
+      // Load and score memories
+      let relevantMemoriesStr = "";
+      try {
+        const { data: fetchMems, error: fetchErr } = await userSupabase
+          .from("ai_agent_memories")
+          .select("*")
+          .eq("user_id", user.id)
+          .eq("is_active", true);
+        
+        if (!fetchErr && fetchMems && fetchMems.length > 0) {
+          const relevantNonSummaryMems = fetchMems.filter(m => m.memory_type !== "summary" && m.title !== "Convo Context Summary" && m.title !== "Agent Memory Summary");
+          const scoredMems = relevantNonSummaryMems.map(m => ({
+            mem: m,
+            score: scoreMemoryRelevance(m, task.title || "", "", agent.role || "")
+          }));
+          scoredMems.sort((a, b) => b.score - a.score);
+          const topMems = scoredMems.slice(0, 8).map(x => x.mem);
+          
+          let memCharCount = 0;
+          for (const m of topMems) {
+            const formatted = formatMemoryCompact(m);
+            if (memCharCount + formatted.length > 1000) break;
+            relevantMemoriesStr += formatted + "\n";
+            memCharCount += formatted.length + 1;
+          }
+          relevantMemoriesStr = relevantMemoriesStr.trim();
+
+          // Update last_used_at for selected memories
+          if (topMems.length > 0) {
+            const selectedMemoryIds = topMems.map(m => m.id);
+            await userSupabase
+              .from("ai_agent_memories")
+              .update({ last_used_at: new Date().toISOString() })
+              .in("id", selectedMemoryIds);
+          }
+        }
+      } catch (err) {
+        console.error("Error fetching memories for specialist run:", err);
+      }
+      if (!relevantMemoriesStr) {
+        relevantMemoriesStr = "No matching long-term memories.";
+      }
+
       let systemContextSummary = "";
       try {
         const [projectsRes, tasksRes, businessesRes] = await Promise.all([
@@ -2616,7 +2864,7 @@ Tasks: ${tasks.map(t => `${t.title} [Status: ${t.status}, Priority: ${t.priority
         if (taskTypeLower === "schedule" || taskTypeLower === "calendar") {
           const [accountsRes, eventsRes, tasksRes] = await Promise.all([
             userSupabase.from("calendar_accounts").select("id, provider, email_address").eq("user_id", user.id).limit(5),
-            userSupabase.from("calendar_events").select("id, title, start_at, end_at, description").eq("user_id", user.id).order("start_at", { ascending: true }).limit(10),
+            userSupabase.from("calendar_events").select("id, title, start_at, end_at, description").eq("user_id", user.id).gte('start_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()).order("start_at", { ascending: true }).limit(10),
             userSupabase.from("tasks").select("id, title, status, due_date").eq("user_id", user.id).not("due_date", "is", null).limit(10)
           ]);
           improvedContext = `
@@ -2753,7 +3001,13 @@ Projects: ${JSON.stringify(projectsRes.data || [])}
         }
       }
 
-      const taskTimeStr = new Date().toLocaleString("en-US", { timeZone: taskTimezone });
+      const nowLoc = new Date();
+      const taskTimeStr = nowLoc.toLocaleString("en-US", { timeZone: taskTimezone });
+      const yesterday = new Date(nowLoc.getTime() - 24 * 60 * 60 * 1000);
+      const yesterdayStr = yesterday.toLocaleDateString("en-US", { timeZone: taskTimezone, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      const todayStr = nowLoc.toLocaleDateString("en-US", { timeZone: taskTimezone, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      const tomorrow = new Date(nowLoc.getTime() + 24 * 60 * 60 * 1000);
+      const tomorrowStr = tomorrow.toLocaleDateString("en-US", { timeZone: taskTimezone, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
       const systemPrompt = `You are a specialized AI Agent inside a command-center ecosystem.
 Agent Profile:
@@ -2767,9 +3021,22 @@ Task Title: ${task.title}
 Task Type: ${task.task_type}
 Input payload (JSON): ${JSON.stringify(task.input_json || {})}
 
-Current Date and Time (${taskTimezone} zone): ${taskTimeStr}
-For calendar events, resolve relative dates like today/tomorrow using ${taskTimezone}. Always output start_at and end_at as ISO timestamps with timezone offset.
+Current Date and Time:
+- Current local time for Boss: ${taskTimeStr}
+- Timezone: ${taskTimezone}
+- Resolved local dates in ${taskTimezone}:
+  * Yesterday was ${yesterdayStr}
+  * Today is ${todayStr}
+  * Tomorrow is ${tomorrowStr}
 
+CRITICAL DATE CALCULATION RULES:
+- For ALL calendar actions, always calculate the start_at and end_at based on the current local date/time from ${taskTimezone}.
+- When the user says "tomorrow", "next Friday", "tonight", "morning", etc., resolve it explicitly using ${taskTimezone}.
+- Never use UTC/Z times for local calendar events unless Boss explicitly asks for UTC.
+- For tasks, use work_date for scheduled task dates/times and due_date only for deadlines. Preserve exact user times like "4:20 PM".
+
+${userProfileSummary ? `User Profile Summary:\n${userProfileSummary}\n` : ""}
+${relevantMemoriesStr ? `Relevant Long-Term Memories:\n${relevantMemoriesStr}\n` : ""}
 ${conversationContext ? `Recent Chat Context:\n${conversationContext}\n` : ""}
 ${fullContextPackage ? `Current User DB Context:\n${fullContextPackage}\n` : ""}
 
@@ -2787,10 +3054,10 @@ JSON Schema:
   "summary": "A detailed 1-2 sentence summary of what you accomplished or found.",
   "status": "completed" | "needs_approval" | "failed",
   "suggested_pending_action": null | {
-    "action_type": "create_project" | "create_task" | "create_expense" | "create_contact" | "create_calendar_event" | "create_social_post",
+    "action_type": "create_project" | "update_project" | "delete_project" | "update_project_status" | "add_project_note" | "create_task" | "update_task" | "delete_task" | "create_expense" | "update_expense" | "delete_expense" | "create_contact" | "update_contact" | "delete_contact" | "create_calendar_event" | "update_calendar_event" | "delete_calendar_event" | "create_social_post",
     "entity_type": "project" | "task" | "expense" | "phonebook_contact" | "calendar_event" | "social_post",
     "payload": { ... },
-    "summary": "A friendly scannable summary explaining what database record of type <entity_type> you propose to create"
+    "summary": "A friendly scannable summary explaining the exact database action being proposed"
   }
 }`;
 
@@ -3047,15 +3314,28 @@ JSON Schema:
         );
 
         if (requiresConfirmation) {
-          const actionData = {
-            user_id: user.id,
-            agent_id: agent.id,
-            action_type: normalizedActionType,
-            entity_type: resultObj.suggested_pending_action.entity_type || "task",
-            payload: resultObj.suggested_pending_action.payload || {},
-            summary: actionSummary,
-            status: "pending"
-          };
+          const specialistPayload = {
+  ...(resultObj.suggested_pending_action.payload || {}),
+  _metadata: {
+    ...(resultObj.suggested_pending_action.payload?._metadata || {}),
+    conversation_id: conversation_id || null,
+    source_agent_id: agent.id,
+    source_page: "agent_task"
+  }
+};
+
+const actionData = {
+  user_id: user.id,
+  agent_id: agent.id,
+  source_agent_id: agent.id,
+  conversation_id: conversation_id || null,
+  source_page: "agent_task",
+  action_type: normalizedActionType,
+  entity_type: resultObj.suggested_pending_action.entity_type || "task",
+  payload: specialistPayload,
+  summary: actionSummary,
+  status: "pending"
+};
 
           const { data: newAction, error: insertActionError } = await userSupabase
             .from("ai_pending_actions")
@@ -3643,7 +3923,7 @@ JSON Schema:
       if (!apiKey) {
         throw new Error("GOOGLE_AI_API_KEY is not defined in the environment.");
       }
-      const model = agent?.model_name || process.env.GOOGLE_AI_MODEL || "gemini-2.5-flash-lite";
+      const model = agent?.model_name || process.env.GOOGLE_AI_MODEL || "gemini-2.5-flash";
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
       const response = await fetch(url, {
@@ -4066,15 +4346,28 @@ Example format:
       }
 
       for (const action of pendingActions) {
-        const { data: actionData, error: actionErr } = await adminSupabaseClient.from("ai_pending_actions").insert({
-          user_id: automation.user_id,
-          agent_id: automation.agent_id,
-          action_type: action.action_type || "create_task",
-          entity_type: action.entity_type || "task",
-          payload: action.payload || {},
-          summary: action.summary || "Suggested action from automation system",
-          status: "pending"
-        }).select("id").single();
+  const automationPayload = {
+    ...(action.payload || {}),
+    _metadata: {
+      ...(action.payload?._metadata || {}),
+      source_agent_id: automation.agent_id,
+      source_page: "automation",
+      automation_id: automation.id
+    }
+  };
+
+  const { data: actionData, error: actionErr } = await adminSupabaseClient.from("ai_pending_actions").insert({
+    user_id: automation.user_id,
+    agent_id: automation.agent_id,
+    source_agent_id: automation.agent_id,
+    conversation_id: null,
+    source_page: "automation",
+    action_type: action.action_type || "create_task",
+    entity_type: action.entity_type || "task",
+    payload: automationPayload,
+    summary: action.summary || "Suggested action from automation system",
+    status: "pending"
+  }).select("id").single();
 
         if (actionErr) {
           console.error(`[Automation Engine] Error inserting pending action:`, actionErr);
@@ -4568,6 +4861,11 @@ Example format:
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // Return JSON 404 for any unmatched /api routes
+  app.all("/api/*all", (req: ServerRequest, res: ServerResponse) => {
+    res.status(404).json({ error: "API route not found" });
   });
 
   // Vite middleware for development

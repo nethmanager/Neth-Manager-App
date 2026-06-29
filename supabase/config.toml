@@ -21,3 +21,9 @@ verify_jwt = true
 
 [functions.google-calendar-create-event]
 verify_jwt = true
+
+[functions.google-calendar-update-event]
+verify_jwt = true
+
+[functions.google-calendar-delete-event]
+verify_jwt = true

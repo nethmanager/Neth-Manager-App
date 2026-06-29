@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 import { useUser } from '../hooks/useUser';
@@ -98,7 +98,11 @@ export function AIProvider({ children }: { children: React.ReactNode }) {
   const [resolvingActionIds, setResolvingActionIds] = useState<string[]>([]);
   const [localPendingActions, setLocalPendingActions] = useState<PendingAction[]>([]);
   const [dbPendingActions, setDbPendingActions] = useState<PendingAction[]>([]);
-  const pendingActions = [...localPendingActions, ...dbPendingActions];
+  const [currentConvId, setCurrentConvId] = useState<string | null>(() => {
+    const activeId = localStorage.getItem('ai_active_agent_id') || 'default_conversation';
+    return localStorage.getItem(`ai_force_new_conversation_${activeId}`) === 'true' ? null : localStorage.getItem(`ai_conversation_id_${activeId}`);
+  });
+
   const [provider, setProviderState] = useState<'ollama' | 'gemini' | 'openai' | 'claude'>(
     () => (localStorage.getItem('ai_provider') as 'ollama' | 'gemini' | 'openai' | 'claude') || 'gemini'
   );
@@ -117,6 +121,44 @@ export function AIProvider({ children }: { children: React.ReactNode }) {
   );
 
   const activeAgent = agents.find(a => a.id === activeAgentId) || agents.find(a => a.is_default) || agents[0] || null;
+
+  const pendingActions = useMemo(() => {
+    let list = [...localPendingActions, ...dbPendingActions];
+    const activeId = activeAgent?.id || 'default_conversation';
+    const forceNewConversation = localStorage.getItem(`ai_force_new_conversation_${activeId}`) === 'true';
+
+    if (currentConvId && !forceNewConversation) {
+      list = list.filter(item => {
+        const itemConvId = item.payload?._metadata?.conversation_id || (item as any).conversation_id;
+        if (itemConvId) {
+          return String(itemConvId) === String(currentConvId);
+        }
+        return true;
+      });
+    } else if (forceNewConversation) {
+      list = list.filter(item => {
+        const itemAgentId = (item as any).agent_id || item.payload?._metadata?.source_agent_id;
+        const itemConvId = item.payload?._metadata?.conversation_id;
+        if (itemConvId) return false;
+        if (itemAgentId && String(itemAgentId) === String(activeAgent?.id)) {
+          return false;
+        }
+        return true;
+      });
+    }
+
+    if (activeAgent) {
+      list = list.filter(item => {
+        const itemAgentId = (item as any).agent_id || item.payload?._metadata?.source_agent_id;
+        if (itemAgentId) {
+          return String(itemAgentId) === String(activeAgent.id);
+        }
+        return true;
+      });
+    }
+
+    return list;
+  }, [localPendingActions, dbPendingActions, currentConvId, activeAgent?.id, activeAgent]);
 
  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
 const [isSpeaking, setIsSpeaking] = useState(false);
@@ -309,7 +351,7 @@ const latestChatRequestRef = useRef(0);
       }
       const mapped = (result.pending_actions || []).map((row: any) => ({
         id: row.id,
-        type: row.action_type.startsWith("create") ? "create" : "update",
+        type: row.action_type.startsWith("delete") || row.action_type.includes("delete") || row.action_type.includes("cancel") ? "delete" : (row.action_type.startsWith("create") ? "create" : "update"),
         entity: row.entity_type,
         description: row.summary,
         execute: async () => {
@@ -323,7 +365,11 @@ const latestChatRequestRef = useRef(0);
             body: JSON.stringify({ action_id: row.id, execute: true })
           });
           if (!res.ok) {
-            const err = await res.json();
+            const contentType = res.headers.get("content-type") || "";
+            if (!contentType.includes("application/json")) {
+              throw new Error("Assistant backend route returned HTML instead of JSON. Check API route/deployment.");
+            }
+            const err = await res.json().catch(() => ({}));
             throw new Error(err.error || "Failed to confirm action");
           }
         },
@@ -332,6 +378,10 @@ const latestChatRequestRef = useRef(0);
         entity_type: row.entity_type,
         payload: row.payload,
         summary: row.summary,
+        agent_id: row.agent_id || row.source_agent_id || row.payload?._metadata?.source_agent_id || null,
+        conversation_id: row.conversation_id || row.payload?._metadata?.conversation_id || null,
+        source_agent_id: row.source_agent_id || row.payload?._metadata?.source_agent_id || null,
+        source_page: row.source_page || row.payload?._metadata?.source_page || null,
         status: row.status
       }));
 
@@ -402,7 +452,15 @@ const latestChatRequestRef = useRef(0);
             conversation_id: currentConvId || undefined
           })
         });
-        const data = await res.json();
+
+        const resContentType = res.headers.get("content-type") || "";
+        if (!resContentType.includes("application/json")) {
+          throw new Error("Assistant backend route returned HTML instead of JSON. Check API route/deployment.");
+        }
+
+        const data = await res.json().catch(() => {
+          throw new Error("Assistant backend route returned HTML instead of JSON. Check API route/deployment.");
+        });
 
         if (data && data.timeline_messages && Array.isArray(data.timeline_messages)) {
           setMessages(prev => [
@@ -639,20 +697,47 @@ const latestChatRequestRef = useRef(0);
     const userMessage = input.trim();
     if (!userMessage || loading) return;
     
-        const normalizedConfirm = userMessage.toLowerCase().trim();
+    const isVerbalConfirmation = (text: string): boolean => {
+      const clean = text.toLowerCase().trim();
+      const directPhrases = [
+        "yes", "confirm", "do it", "apply", "looks good", 
+        "approved", "looks great", "go ahead", "update that", 
+        "sounds good", "yes please", "looks good, do it", "looks good do it", "apply it"
+      ];
+      if (directPhrases.includes(clean)) return true;
+      
+      const regex = /^(yes|confirm|do it|apply|looks good|looks great|go ahead|update that|sounds good|yes please|apply it)(\s+(please|boss|emily|assistant|now))?$/i;
+      return regex.test(clean);
+    };
+
     const openPendingActions = pendingActions.filter(a => a.status === 'pending' || !a.status);
 
-    if (['confirm', 'approve', 'yes confirm', 'yes approve', 'do it', 'apply it'].includes(normalizedConfirm)) {
+    if (isVerbalConfirmation(userMessage)) {
       setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
 
+      const lastMsg = messages[messages.length - 1];
+      const assistantAsked = lastMsg && lastMsg.role === 'assistant' && (
+        lastMsg.content.toLowerCase().includes("confirm") || 
+        lastMsg.content.toLowerCase().includes("prepared") ||
+        lastMsg.content.toLowerCase().includes("approve") ||
+        lastMsg.content.toLowerCase().includes("would you like me to") ||
+        lastMsg.content.toLowerCase().includes("apply") ||
+        lastMsg.content.toLowerCase().includes("queued") ||
+        lastMsg.content.toLowerCase().includes("should i")
+      );
+
       if (openPendingActions.length === 1) {
-        try {
-          await resolvePendingAction(openPendingActions[0].id, true);
-        } catch (err: any) {
-          // Error handling already done in resolvePendingAction
+        if (assistantAsked) {
+          try {
+            await resolvePendingAction(openPendingActions[0].id, true);
+          } catch (err: any) {
+            // Error handling already done in resolvePendingAction
+          }
+        } else {
+          setMessages(prev => [...prev, { role: 'assistant', content: 'Did you want to confirm that pending action, Boss? Please click Confirm or explicitly tell me to do it.' }]);
         }
       } else if (openPendingActions.length > 1) {
-        setMessages(prev => [...prev, { role: 'assistant', content: 'I see multiple pending actions, Boss. Please use the Confirm button on the one you want.' }]);
+        setMessages(prev => [...prev, { role: 'assistant', content: 'I see multiple pending actions, Boss. Please be specific or use the Confirm button on the accurate one.' }]);
       } else {
         setMessages(prev => [...prev, { role: 'assistant', content: 'There is nothing pending to confirm right now.' }]);
       }
@@ -734,20 +819,32 @@ const response = await fetch("/api/assistant/chat", {
 });
 
         if (!response.ok) {
+          const contentType = response.headers.get("content-type") || "";
+          if (!contentType.includes("application/json")) {
+            throw new Error("Assistant backend route returned HTML instead of JSON. Check API route/deployment.");
+          }
           const errData = await response.json().catch(() => ({}));
           throw new Error(errData.error || `Server error: ${response.statusText}`);
         }
 
-        const data = await response.json();
+        const contentType = response.headers.get("content-type") || "";
+        if (!contentType.includes("application/json")) {
+          throw new Error("Assistant backend route returned HTML instead of JSON. Check API route/deployment.");
+        }
+
+        const data = await response.json().catch(() => {
+          throw new Error("Assistant backend route returned HTML instead of JSON. Check API route/deployment.");
+        });
         if (requestId !== latestChatRequestRef.current) {
            return;
         }
         const reply = data.reply || "";
 
         if (data.conversation_id) {
-  localStorage.setItem(`ai_conversation_id_${activeId}`, data.conversation_id);
-  localStorage.removeItem(`ai_force_new_conversation_${activeId}`);
-}
+          localStorage.setItem(`ai_conversation_id_${activeId}`, data.conversation_id);
+          localStorage.removeItem(`ai_force_new_conversation_${activeId}`);
+          setCurrentConvId(data.conversation_id);
+        }
 
         if (data.action_created) {
           refreshPendingActions().catch(err => {
@@ -963,9 +1060,83 @@ const validation = validateAIResponse(response, sensitiveValues);
           details: { reason: validation.reason }
         });
       } else {
-        setMessages(prev => [...prev, { role: 'assistant', content: response }]);
+        // Extract and parse JSON action blocks from Ollama text inside the main context
+        const extractJsonBlocksLocal = (text: string): any | null => {
+          try {
+            const jsonRegex = /```json\s*([\s\S]*?)\s*```/g;
+            let match;
+            while ((match = jsonRegex.exec(text)) !== null) {
+              const rawJson = match[1].trim();
+              const parsed = JSON.parse(rawJson);
+              if (parsed && (parsed.action_type || parsed.type)) {
+                return parsed;
+              }
+            }
+
+            // Try a looser match if no markdown blocks are found
+            const looseRegex = /(\{[\s\S]*\})/g;
+            let looseMatch;
+            while ((looseMatch = looseRegex.exec(text)) !== null) {
+              try {
+                const parsed = JSON.parse(looseMatch[1].trim());
+                if (parsed && (parsed.action_type || parsed.type)) {
+                  return parsed;
+                }
+              } catch (e) {
+                // ignore
+              }
+            }
+          } catch (e) {
+            console.warn("Could not extract potential local tool block:", e);
+          }
+          return null;
+        };
+
+        const detectedAction = extractJsonBlocksLocal(response);
+        let actionResponseSummary = "";
+        
+        if (detectedAction) {
+          try {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session?.access_token) {
+              const actionCreateRes = await fetch("/api/assistant/action/create", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "Authorization": `Bearer ${session.access_token}`
+                },
+                body: JSON.stringify({
+                  action_type: detectedAction.action_type || detectedAction.type,
+                  entity_type: detectedAction.entity_type || "generic",
+                  payload: detectedAction.payload || {},
+                  summary: detectedAction.summary || `Prepare ${detectedAction.action_type || detectedAction.type}`,
+                  conversation_id: currentConvId || undefined,
+                  agent_id: activeAgent?.id || "default"
+                })
+              });
+              
+              if (actionCreateRes.ok) {
+                const resData = await actionCreateRes.json();
+                if (resData.success) {
+                  actionResponseSummary = "\n\n(I have registered this as a pending action. Please confirm below to apply.)";
+                  refreshPendingActions().catch(err => {
+                    console.warn("Could not refresh pending actions for Ollama:", err);
+                  });
+                }
+              } else {
+                const errJson = await actionCreateRes.json().catch(() => ({}));
+                actionResponseSummary = `\n\n[Action blocked by validation: ${errJson.error || "Action validation failed against registry."}]`;
+              }
+            }
+          } catch (createErr: any) {
+            console.warn("Could not register local Ollama action through backend:", createErr);
+          }
+        }
+
+        const finalResponse = response + actionResponseSummary;
+        setMessages(prev => [...prev, { role: 'assistant', content: finalResponse }]);
         if (voiceEnabled) {
-          speakText(response);
+          speakText(finalResponse);
         }
       }
     } catch (error: any) {
@@ -990,6 +1161,20 @@ const validation = validateAIResponse(response, sensitiveValues);
   const activeId = activeAgent?.id || 'default_conversation';
   localStorage.removeItem(`ai_conversation_id_${activeId}`);
   localStorage.setItem(`ai_force_new_conversation_${activeId}`, 'true');
+  setCurrentConvId(null);
+  if (user && activeAgent) {
+    supabase
+      .from('ai_conversations')
+      .update({ status: 'archived', updated_at: new Date().toISOString() })
+      .eq('user_id', user.id)
+      .eq('agent_id', activeAgent.id)
+      .eq('status', 'active')
+      .then(({ error }) => {
+        if (error) {
+          console.warn("Could not archive active conversations:", error);
+        }
+      });
+  }
 };
 
   // Load conversation messages from Supabase when activeAgent changes
@@ -1000,11 +1185,13 @@ const validation = validateAIResponse(response, sensitiveValues);
   const forceNewConversation = localStorage.getItem(`ai_force_new_conversation_${activeId}`) === 'true';
 
   if (forceNewConversation) {
+    setCurrentConvId(null);
     setMessages([]);
     return;
   }
 
   if (storedConvId) {
+    setCurrentConvId(storedConvId);
     const fetchConvMessages = async () => {
       try {
         const { data, error } = await supabase
@@ -1026,6 +1213,7 @@ const validation = validateAIResponse(response, sensitiveValues);
     fetchConvMessages();
   } else {
     setMessages([]);
+    setCurrentConvId(null);
   }
 }, [activeAgent?.id, user]);
 

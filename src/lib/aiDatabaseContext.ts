@@ -87,7 +87,7 @@ export async function buildAIDatabaseContext(userId: string, isDetailed: boolean
     fetchData('email_project_links', supabase.from('email_project_links').select('email_id, project:projects(name)').eq('user_id', userId)),
     fetchData('expense_project_links', supabase.from('expense_project_links').select('expense_id, project:projects(name)').eq('user_id', userId)),
     fetchData('calendar_accounts', supabase.from('calendar_accounts').select('*').eq('user_id', userId).limit(50)),
-    fetchData('calendar_events', supabase.from('calendar_events').select('*, account:calendar_accounts(email_address, display_name)').eq('user_id', userId).order('start_at', { ascending: true }).limit(100)),
+    fetchData('calendar_events', supabase.from('calendar_events').select('*, account:calendar_accounts(email_address, display_name)').eq('user_id', userId).gte('start_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()).order('start_at', { ascending: true }).limit(100)),
     fetchData('integration_accounts', supabase.from('integration_accounts').select('id, provider, status').eq('user_id', userId).limit(50)),
     fetchData('social_profiles', supabase.from('social_profiles').select('id, provider, handle, display_name, follower_count').eq('user_id', userId).limit(50)),
     fetchData('social_posts', supabase.from('social_posts').select('id, provider, title, status, scheduled_at').eq('user_id', userId).neq('status', 'published').limit(50)),

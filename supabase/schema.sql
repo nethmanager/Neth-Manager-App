@@ -825,6 +825,9 @@ CREATE TABLE IF NOT EXISTS public.ai_pending_actions (
   summary TEXT NOT NULL,
   status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'skipped', 'executed', 'failed', 'expired')),
   result JSONB,
+  conversation_id UUID REFERENCES public.ai_conversations(id) ON DELETE SET NULL,
+  source_agent_id UUID REFERENCES public.ai_agents(id) ON DELETE SET NULL,
+  source_page TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
   resolved_at TIMESTAMP WITH TIME ZONE
 );
@@ -896,6 +899,8 @@ WITH CHECK (auth.uid() = user_id);
 CREATE INDEX IF NOT EXISTS idx_ai_agent_memories_user ON public.ai_agent_memories(user_id);
 CREATE INDEX IF NOT EXISTS idx_ai_pending_actions_user ON public.ai_pending_actions(user_id);
 CREATE INDEX IF NOT EXISTS idx_ai_pending_actions_status ON public.ai_pending_actions(status);
+CREATE INDEX IF NOT EXISTS idx_ai_pending_actions_scope
+ON public.ai_pending_actions(user_id, status, conversation_id, agent_id, source_agent_id);
 CREATE INDEX IF NOT EXISTS idx_ai_agent_runs_user ON public.ai_agent_runs(user_id);
 CREATE INDEX IF NOT EXISTS idx_ai_agent_tool_calls_user ON public.ai_agent_tool_calls(user_id);
 

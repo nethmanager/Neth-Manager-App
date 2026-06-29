@@ -607,7 +607,7 @@ export default function AIAssistantPage() {
   }
 
   return (
-    <div className="w-full max-w-6xl mx-auto flex flex-col h-[calc(100vh-var(--ai-footer-height,72px)-var(--ai-footer-expanded-height,0px)-7rem)] min-h-[520px] max-h-[calc(100vh-var(--ai-footer-height,72px)-var(--ai-footer-expanded-height,0px)-7rem)] bg-slate-950/50 border border-white/10 rounded-[2rem] overflow-hidden shadow-2xl backdrop-blur-sm">
+    <div className="w-full h-full max-w-[1600px] mx-auto flex flex-col bg-slate-950/50 border border-white/10 rounded-[2rem] overflow-hidden shadow-2xl backdrop-blur-sm">
       {/* Header */}
       <div className="p-4 md:p-5 shrink-0 flex flex-col xl:flex-row xl:items-center justify-between gap-4 border-b border-white/5 bg-white/[0.02]">
         <div className="flex items-center gap-4 min-w-0 w-full xl:w-auto">
@@ -761,18 +761,18 @@ export default function AIAssistantPage() {
       )}
 
       {/* Main Chat Area */}
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6 space-y-4 no-scrollbar">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-3 md:p-4 space-y-3 no-scrollbar">
         {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-center max-w-md mx-auto opacity-40 py-8">
-            <div className="w-16 h-16 rounded-full bg-blue-500/5 flex items-center justify-center mb-6 border border-blue-500/10">
-              <Terminal size={32} className="text-blue-500" />
+          <div className="flex flex-col items-center justify-center h-full text-center max-w-md mx-auto opacity-40 py-4">
+            <div className="w-12 h-12 rounded-full bg-blue-500/5 flex items-center justify-center mb-4 border border-blue-500/10">
+              <Terminal size={24} className="text-blue-500" />
             </div>
-            <h3 className="text-base font-black text-white uppercase tracking-[0.4em] mb-3">Neth Assistant</h3>
-            <p className="text-xs text-white/60 leading-relaxed uppercase tracking-widest font-bold px-4">
+            <h3 className="text-sm font-black text-white uppercase tracking-[0.4em] mb-1.5">Neth Assistant</h3>
+            <p className="text-[10px] text-white/60 leading-relaxed uppercase tracking-widest font-bold px-4">
               Ask questions about your businesses, projects, tasks, platforms, emails, and plans.
             </p>
             
-            <div className="grid grid-cols-1 w-full gap-3 mt-8">
+            <div className="grid grid-cols-1 w-full gap-2 mt-6">
               <QuickPrompt label="Daily Summary" prompt="Provide a high-level summary of my current daily plan and objectives." />
               <QuickPrompt label="What Should I Do Next?" prompt="Based on my current tasks and priorities, what is the next thing I should work on?" />
               <QuickPrompt label="Urgent Items" prompt="List all tasks or emails that require immediate attention (urgent priority or overdue)." />
@@ -784,33 +784,33 @@ export default function AIAssistantPage() {
 
         {messages.map((msg: any, i: number) => (
           <div key={i} className={cn(
-            "flex flex-col max-w-[90%] md:max-w-[70%] animate-in fade-in slide-in-from-bottom-1 duration-200",
+            "flex flex-col max-w-[85%] md:max-w-[75%] xl:max-w-[1000px] animate-in fade-in slide-in-from-bottom-1 duration-200 py-0.5",
             msg.role === 'user' ? "ml-auto items-end" : "mr-auto items-start"
           )}>
+            <div className="flex items-center gap-1.5 mb-0.5 px-1">
+              <span className="text-[9px] font-black uppercase text-white/30 tracking-[0.22em] scale-90 origin-left">
+                {msg.role === 'user' ? 'YOU' : 'ASSISTANT'}
+              </span>
+            </div>
             <div className={cn(
-              "px-4 py-2.5 rounded-2xl text-sm leading-relaxed shadow-md",
+              "px-4 py-2 rounded-2xl text-sm leading-relaxed shadow-sm",
               msg.role === 'user' 
                 ? "bg-blue-600 text-white rounded-br-none" 
-                : "bg-white/5 border border-white/10 text-white/90 rounded-bl-none"
+                : "bg-white/5 border border-white/10 text-white/90 rounded-tl-none"
             )}>
               {msg.content}
-            </div>
-            <div className="flex items-center gap-2 mt-1 px-1">
-              <span className="text-[8px] font-black uppercase text-white/20 tracking-[0.2em]">
-                {msg.role === 'user' ? 'You' : 'Assistant'}
-              </span>
             </div>
           </div>
         ))}
         
-        <div className="flex items-center gap-2 text-white/30 text-[8px] font-black uppercase tracking-[0.25em] justify-center border-t border-white/5 pt-4">
+        <div className="flex items-center gap-2 text-white/20 text-[8px] font-black uppercase tracking-[0.25em] justify-center border-t border-white/5 pt-3">
           <Terminal size={10} className="text-amber-500 shrink-0" />
           <span>Future messages processed by: {activeAgent?.name || 'Emily'} ({activeAgent?.role || 'Executive Assistant'})</span>
         </div>
 
         {loading && (
-          <div className="flex items-center gap-2 text-blue-400 p-2 pl-4">
-            <Zap size={16} className="animate-pulse fill-current" />
+          <div className="flex items-center gap-2 text-blue-400 p-1 pl-4">
+            <Zap size={14} className="animate-pulse fill-current" />
             <span className="text-[10px] font-black uppercase tracking-[0.3em] animate-pulse">Thinking...</span>
           </div>
         )}
