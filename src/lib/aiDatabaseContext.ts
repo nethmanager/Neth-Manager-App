@@ -7,12 +7,41 @@ function truncateText(text: string | null, limit: number = 300): string {
   return text.substring(0, limit) + '...';
 }
 
-export async function buildAIDatabaseContext(userId: string, isDetailed: boolean = false): Promise<{ context: string, errors: string[], timestamp: number, sensitiveValues: string[] }> {
+export async function buildAIDatabaseContext(userId: string, isDetailed: boolean = false, userMessage?: string): Promise<{ context: string, errors: string[], timestamp: number, sensitiveValues: string[] }> {
   const errors: string[] = [];
   const timestamp = Date.now();
   const sensitiveValues: Set<string> = new Set();
   
-  // ... (limits and fetchData remain the same)
+  let includeTasks = true;
+  let includeEmails = true;
+  let includeFinances = true;
+  let includeSocial = true;
+  let includeContacts = true;
+  let includeAgentStatus = true;
+  let isFiltered = false;
+
+  if (userMessage) {
+    const msg = userMessage.toLowerCase();
+    
+    const hasTasks = /\b(task|todo|to-do|project|plan|schedule|calendar|event|meeting|daily|morning|review|agenda|date|today|tomorrow|yesterday|week|month)\b/i.test(msg);
+    const hasEmails = /\b(email|mail|inbox|subject|sender|folder|snippet|unread|received)\b/i.test(msg);
+    const hasFinances = /\b(expense|budget|finance|financial|spent|cost|money|account|transaction|paid|payment|dollar|usd|invoice|bill)\b/i.test(msg);
+    const hasSocial = /\b(post|social|facebook|linkedin|twitter|instagram|outreach|publish|draft|feed|approval)\b/i.test(msg);
+    const hasContacts = /\b(contact|phone|call|address|directory|person|people|friend|client|customer|member|user|business|platform|company)\b/i.test(msg);
+    const hasAgentStatus = /\b(agent|run|usage|limit|price|cost|spend|error|status|log|activity|action)\b/i.test(msg);
+
+    // If at least one category was specifically asked, we apply filtering!
+    if (hasTasks || hasEmails || hasFinances || hasSocial || hasContacts || hasAgentStatus) {
+      includeTasks = hasTasks;
+      includeEmails = hasEmails;
+      includeFinances = hasFinances;
+      includeSocial = hasSocial;
+      includeContacts = hasContacts;
+      includeAgentStatus = hasAgentStatus;
+      isFiltered = true;
+    }
+  }
+
   const limits = isDetailed ? {
     projects: 100,
     tasks: 100,
@@ -70,32 +99,32 @@ export async function buildAIDatabaseContext(userId: string, isDetailed: boolean
     ai_model_prices
   ] = await Promise.all([
     fetchData('profiles', supabase.from('profiles').select('*').eq('id', userId).maybeSingle()),
-    fetchData('businesses', supabase.from('businesses').select('*').eq('user_id', userId).limit(50)),
-    fetchData('platforms', supabase.from('platforms').select('*, business:businesses(name)').eq('user_id', userId).limit(50)),
-    fetchData('projects', supabase.from('projects').select('*, business:businesses(name), platform:platforms(name)').eq('user_id', userId).order('created_at', { ascending: false }).limit(limits.projects)),
-    fetchData('tasks', supabase.from('tasks').select('*, business:businesses(name), project:projects(name), platform:platforms(name)').eq('user_id', userId).order('created_at', { ascending: false }).limit(limits.tasks)),
-    fetchData('email_accounts', supabase.from('email_accounts').select('id,email_address,provider,status,last_synced_at,business:businesses(name)').eq('user_id', userId).limit(20)),
-    fetchData('emails', supabase.from('emails').select('id, account_id, folder_id, linked_project_id, linked_platform_id, tags, ai_summary, ai_suggested_task_title, subject, sender, received_at, status, is_read, snippet, project:projects!linked_project_id(name), platform:platforms!linked_platform_id(name)').eq('user_id', userId).order('received_at', { ascending: false }).limit(limits.emails)),
-    fetchData('daily_plans', supabase.from('daily_plans').select('*').eq('user_id', userId).order('date', { ascending: false }).limit(7)),
-    fetchData('email_folders', supabase.from('email_folders').select('id, name, email_account_id, folder_type').eq('user_id', userId)),
-    fetchData('activity_logs', supabase.from('activity_logs').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(limits.activity)),
+    includeContacts ? fetchData('businesses', supabase.from('businesses').select('*').eq('user_id', userId).limit(50)) : Promise.resolve(null),
+    includeContacts ? fetchData('platforms', supabase.from('platforms').select('*, business:businesses(name)').eq('user_id', userId).limit(50)) : Promise.resolve(null),
+    includeTasks ? fetchData('projects', supabase.from('projects').select('*, business:businesses(name), platform:platforms(name)').eq('user_id', userId).order('created_at', { ascending: false }).limit(limits.projects)) : Promise.resolve(null),
+    includeTasks ? fetchData('tasks', supabase.from('tasks').select('*, business:businesses(name), project:projects(name), platform:platforms(name)').eq('user_id', userId).order('created_at', { ascending: false }).limit(limits.tasks)) : Promise.resolve(null),
+    includeEmails ? fetchData('email_accounts', supabase.from('email_accounts').select('id,email_address,provider,status,last_synced_at,business:businesses(name)').eq('user_id', userId).limit(20)) : Promise.resolve(null),
+    includeEmails ? fetchData('emails', supabase.from('emails').select('id, account_id, folder_id, linked_project_id, linked_platform_id, tags, ai_summary, ai_suggested_task_title, subject, sender, received_at, status, is_read, snippet, project:projects!linked_project_id(name), platform:platforms!linked_platform_id(name)').eq('user_id', userId).order('received_at', { ascending: false }).limit(limits.emails)) : Promise.resolve(null),
+    includeTasks ? fetchData('daily_plans', supabase.from('daily_plans').select('*').eq('user_id', userId).order('date', { ascending: false }).limit(7)) : Promise.resolve(null),
+    includeEmails ? fetchData('email_folders', supabase.from('email_folders').select('id, name, email_account_id, folder_type').eq('user_id', userId)) : Promise.resolve(null),
+    includeAgentStatus ? fetchData('activity_logs', supabase.from('activity_logs').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(limits.activity)) : Promise.resolve(null),
     fetchData('ai_settings', supabase.from('ai_settings').select('*').eq('user_id', userId).maybeSingle()),
-    fetchData('project_items', supabase.from('project_items').select('*, project:projects(name)').eq('user_id', userId).limit(50)),
-    fetchData('phonebook_contacts', supabase.from('phonebook_contacts').select('*, business:businesses(name)').eq('user_id', userId).limit(50)),
-    fetchData('financial_accounts', supabase.from('financial_accounts').select('*, business:businesses(name)').eq('user_id', userId).limit(20)),
-    fetchData('expenses', supabase.from('expenses').select('*, business:businesses(name), project:projects(name), account:financial_accounts(name), contact:phonebook_contacts(name), project_item:project_items(name)').eq('user_id', userId).order('expense_date', { ascending: false }).limit(50)),
-    fetchData('email_project_links', supabase.from('email_project_links').select('email_id, project:projects(name)').eq('user_id', userId)),
-    fetchData('expense_project_links', supabase.from('expense_project_links').select('expense_id, project:projects(name)').eq('user_id', userId)),
-    fetchData('calendar_accounts', supabase.from('calendar_accounts').select('*').eq('user_id', userId).limit(50)),
-    fetchData('calendar_events', supabase.from('calendar_events').select('*, account:calendar_accounts(email_address, display_name)').eq('user_id', userId).gte('start_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()).order('start_at', { ascending: true }).limit(100)),
-    fetchData('integration_accounts', supabase.from('integration_accounts').select('id, provider, status').eq('user_id', userId).limit(50)),
-    fetchData('social_profiles', supabase.from('social_profiles').select('id, provider, handle, display_name, follower_count').eq('user_id', userId).limit(50)),
-    fetchData('social_posts', supabase.from('social_posts').select('id, provider, title, status, scheduled_at').eq('user_id', userId).neq('status', 'published').limit(50)),
-    fetchData('approval_requests', supabase.from('approval_requests').select('id, entity_type, action_type, status').eq('user_id', userId).eq('status', 'pending').limit(50)),
-    fetchData('agent_tasks', supabase.from('agent_tasks').select('id, task_type, status').eq('user_id', userId).order('created_at', { ascending: false }).limit(20)),
-    fetchData('ai_usage_events', supabase.from('ai_usage_events').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(50)),
-    fetchData('ai_agent_runs', supabase.from('ai_agent_runs').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(20)),
-    fetchData('ai_usage_limits', supabase.from('ai_usage_limits').select('*').eq('user_id', userId).maybeSingle()),
+    includeTasks ? fetchData('project_items', supabase.from('project_items').select('*, project:projects(name)').eq('user_id', userId).limit(50)) : Promise.resolve(null),
+    includeContacts ? fetchData('phonebook_contacts', supabase.from('phonebook_contacts').select('*, business:businesses(name)').eq('user_id', userId).limit(50)) : Promise.resolve(null),
+    includeFinances ? fetchData('financial_accounts', supabase.from('financial_accounts').select('*, business:businesses(name)').eq('user_id', userId).limit(20)) : Promise.resolve(null),
+    includeFinances ? fetchData('expenses', supabase.from('expenses').select('*, business:businesses(name), project:projects(name), account:financial_accounts(name), contact:phonebook_contacts(name), project_item:project_items(name)').eq('user_id', userId).order('expense_date', { ascending: false }).limit(50)) : Promise.resolve(null),
+    includeEmails ? fetchData('email_project_links', supabase.from('email_project_links').select('email_id, project:projects(name)').eq('user_id', userId)) : Promise.resolve(null),
+    includeFinances ? fetchData('expense_project_links', supabase.from('expense_project_links').select('expense_id, project:projects(name)').eq('user_id', userId)) : Promise.resolve(null),
+    includeTasks ? fetchData('calendar_accounts', supabase.from('calendar_accounts').select('*').eq('user_id', userId).limit(50)) : Promise.resolve(null),
+    includeTasks ? fetchData('calendar_events', supabase.from('calendar_events').select('*, account:calendar_accounts(email_address, display_name)').eq('user_id', userId).gte('start_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()).order('start_at', { ascending: true }).limit(100)) : Promise.resolve(null),
+    includeSocial ? fetchData('integration_accounts', supabase.from('integration_accounts').select('id, provider, status').eq('user_id', userId).limit(50)) : Promise.resolve(null),
+    includeSocial ? fetchData('social_profiles', supabase.from('social_profiles').select('id, provider, handle, display_name, follower_count').eq('user_id', userId).limit(50)) : Promise.resolve(null),
+    includeSocial ? fetchData('social_posts', supabase.from('social_posts').select('id, provider, title, status, scheduled_at').eq('user_id', userId).neq('status', 'published').limit(50)) : Promise.resolve(null),
+    includeSocial ? fetchData('approval_requests', supabase.from('approval_requests').select('id, entity_type, action_type, status').eq('user_id', userId).eq('status', 'pending').limit(50)) : Promise.resolve(null),
+    includeAgentStatus ? fetchData('agent_tasks', supabase.from('agent_tasks').select('id, task_type, status').eq('user_id', userId).order('created_at', { ascending: false }).limit(20)) : Promise.resolve(null),
+    includeAgentStatus ? fetchData('ai_usage_events', supabase.from('ai_usage_events').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(50)) : Promise.resolve(null),
+    includeAgentStatus ? fetchData('ai_agent_runs', supabase.from('ai_agent_runs').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(20)) : Promise.resolve(null),
+    includeAgentStatus ? fetchData('ai_usage_limits', supabase.from('ai_usage_limits').select('*').eq('user_id', userId).maybeSingle()) : Promise.resolve(null),
     fetchData('ai_model_prices', supabase.from('ai_model_prices').select('*'))
   ]);
 

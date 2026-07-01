@@ -61,6 +61,23 @@ const FALLBACK_VOICES = [
   { id: '31', voice_provider: 'piper', voice_name: 'en_US-lessac-high', voice_language_code: 'en-US', label: 'Lessac (High)' }
 ];
 
+const DEFAULT_OLLAMA_MODELS = [
+  { name: 'qwen2.5:3b', size: '3B', active: true, best_for: 'General light tasks & low latency on lightweight laptops' },
+  { name: 'llama3.2', size: '3B', active: true, best_for: 'Conversational chat & lightweight processing' },
+  { name: 'gemma2:2b', size: '2B', active: false, best_for: 'Ultra-fast low-latency general tasks' },
+  { name: 'gemma2:9b', size: '9B', active: false, best_for: 'High quality reasoning & coding' },
+  { name: 'gemma:7b', size: '7B', active: false, best_for: 'Standard reasoning and logic' },
+  { name: 'llama3:8b', size: '8B', active: false, best_for: 'Conversational instruction following' },
+  { name: 'llama3.1:8b', size: '8B', active: false, best_for: 'Extended context tasks & complex prompts' },
+  { name: 'mistral:7b', size: '7B', active: false, best_for: 'Creative tasks & coding assistant' },
+  { name: 'phi3:3.8b', size: '3.8B', active: false, best_for: 'Strong reasoning in ultra-compact size' },
+  { name: 'codellama:7b', size: '7B', active: false, best_for: 'Code completion & development tasks' },
+  { name: 'deepseek-coder:6.7b', size: '6.7B', active: false, best_for: 'Advanced software development' },
+  { name: 'qwen2.5-coder:1.5b', size: '1.5B', active: false, best_for: 'Ultra-compact coding and assistance' },
+  { name: 'qwen2.5-coder:7b', size: '7B', active: false, best_for: 'Full-scale offline code generation' }
+];
+
+
 export default function Settings() {
   const navigate = useNavigate();
   const { user } = useUser();
@@ -86,10 +103,185 @@ export default function Settings() {
     setActiveAgentId,
     refetchAgents
   } = useAI();
-  const [activeTab, setActiveTab] = useState<'profile' | 'ai' | 'agents' | 'prompts' | 'security'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'ai' | 'agents' | 'prompts' | 'security' | 'ollama'>('profile');
   const [testingVoice, setTestingVoice] = useState(false);
   const [agentStats, setAgentStats] = useState<Record<string, any>>({});
   const [statsLoading, setStatsLoading] = useState(false);
+
+  // Ollama Model states
+  const [ollamaModels, setOllamaModels] = useState<any[]>([]);
+  const [ollamaLoading, setOllamaLoading] = useState(false);
+  const [isOllamaModalOpen, setIsOllamaModalOpen] = useState(false);
+  const [editingOllamaModel, setEditingOllamaModel] = useState<any | null>(null);
+
+  const sortModels = (models: any[]) => {
+    return [...models].sort((a, b) => {
+      if (a.active && !b.active) return -1;
+      if (!a.active && b.active) return 1;
+      return a.name.localeCompare(b.name);
+    });
+  };
+
+  const fetchOllamaModels = async () => {
+    if (!user) return;
+    setOllamaLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('ollama_models')
+        .select('*')
+        .order('active', { ascending: false })
+        .order('name', { ascending: true });
+
+      if (error) throw error;
+
+      if (!data || data.length === 0) {
+        // Automatically seed default models
+        const seedData = DEFAULT_OLLAMA_MODELS.map(model => ({
+          ...model,
+          user_id: user.id
+        }));
+        const { data: insertedData, error: insertError } = await supabase
+          .from('ollama_models')
+          .insert(seedData)
+          .select();
+        
+        if (insertError) throw insertError;
+        setOllamaModels(sortModels(insertedData || []));
+      } else {
+        setOllamaModels(data);
+      }
+    } catch (err: any) {
+      console.error('Error fetching/seeding Ollama models:', err);
+      showToast.error('Failed to load Ollama models: ' + err.message);
+    } finally {
+      setOllamaLoading(false);
+    }
+  };
+
+  const handleToggleOllamaActive = async (modelId: string, currentActive: boolean) => {
+    try {
+      const { error } = await supabase
+        .from('ollama_models')
+        .update({ active: !currentActive, updated_at: new Date().toISOString() })
+        .eq('id', modelId);
+
+      if (error) throw error;
+
+      setOllamaModels(prev => sortModels(prev.map(m => m.id === modelId ? { ...m, active: !currentActive } : m)));
+      showToast.success('Ollama model status updated');
+    } catch (err: any) {
+      console.error('Error toggling model status:', err);
+      showToast.error('Failed to update status: ' + err.message);
+    }
+  };
+
+  const handleDeleteOllamaModel = async (modelId: string) => {
+    const isConfirmed = await confirm({
+      title: 'Delete Ollama Model',
+      message: 'Are you sure you want to delete this model option?'
+    });
+    if (!isConfirmed) return;
+
+    try {
+      const { error } = await supabase
+        .from('ollama_models')
+        .delete()
+        .eq('id', modelId);
+
+      if (error) throw error;
+
+      setOllamaModels(prev => prev.filter(m => m.id !== modelId));
+      showToast.success('Ollama model deleted successfully');
+    } catch (err: any) {
+      console.error('Error deleting model:', err);
+      showToast.error('Failed to delete model: ' + err.message);
+    }
+  };
+
+  const handleResetOllamaDefaults = async () => {
+    const isConfirmed = await confirm({
+      title: 'Reset to Defaults',
+      message: 'This will delete all custom models and restore the default models. Continue?'
+    });
+    if (!isConfirmed) return;
+
+    setOllamaLoading(true);
+    try {
+      // Delete existing models for the user
+      const { error: deleteError } = await supabase
+        .from('ollama_models')
+        .delete()
+        .eq('user_id', user?.id);
+
+      if (deleteError) throw deleteError;
+
+      // Seed default models
+      const seedData = DEFAULT_OLLAMA_MODELS.map(model => ({
+        ...model,
+        user_id: user?.id
+      }));
+
+      const { data, error: insertError } = await supabase
+        .from('ollama_models')
+        .insert(seedData)
+        .select();
+
+      if (insertError) throw insertError;
+
+      setOllamaModels(sortModels(data || []));
+      showToast.success('Ollama models reset to defaults');
+    } catch (err: any) {
+      console.error('Error resetting models:', err);
+      showToast.error('Failed to reset models: ' + err.message);
+    } finally {
+      setOllamaLoading(false);
+    }
+  };
+
+  const handleSaveOllamaModel = async (values: any) => {
+    if (!user) return;
+    try {
+      const payload = {
+        name: values.name,
+        size: values.size,
+        best_for: values.best_for,
+        active: values.active === 'true',
+        user_id: user.id,
+        updated_at: new Date().toISOString()
+      };
+
+      if (editingOllamaModel) {
+        const { error } = await supabase
+          .from('ollama_models')
+          .update(payload)
+          .eq('id', editingOllamaModel.id);
+
+        if (error) throw error;
+        showToast.success('Model updated');
+      } else {
+        const { error } = await supabase
+          .from('ollama_models')
+          .insert([payload]);
+
+        if (error) throw error;
+        showToast.success('Model added');
+      }
+      
+      setIsOllamaModalOpen(false);
+      setEditingOllamaModel(null);
+      fetchOllamaModels();
+    } catch (err: any) {
+      console.error('Error saving Ollama model:', err);
+      showToast.error('Failed to save model: ' + err.message);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'ollama') {
+      fetchOllamaModels();
+    }
+  }, [activeTab]);
+
 
   const [editingAgent, setEditingAgent] = useState<any | null>(null);
   const [isCreatingNew, setIsCreatingNew] = useState(false);
@@ -624,7 +816,7 @@ export default function Settings() {
         setAiSettings({
           enabled: aiSettingsData.enabled,
           ollama_endpoint: aiSettingsData.ollama_endpoint || 'http://localhost:11434/api/generate',
-          model_name: (['llama3:latest', 'llama3.2:3b', 'gemma3:4b', 'qwen2.5:7b', 'mistral:latest'].includes(aiSettingsData.model_name)) ? 'gemma4:12b' : (aiSettingsData.model_name || 'gemma4:12b'),
+          model_name: (['llama3:latest', 'llama3.2:3b', 'gemma3:4b', 'qwen2.5:7b', 'mistral:latest', 'gemma4:12b'].includes(aiSettingsData.model_name)) ? 'qwen2.5:3b' : (aiSettingsData.model_name || 'qwen2.5:3b'),
           temperature: aiSettingsData.temperature ?? 0.7,
           max_tokens: aiSettingsData.max_tokens ?? 2048,
           allow_sensitive_context: aiSettingsData.allow_sensitive_context ?? false
@@ -636,6 +828,9 @@ export default function Settings() {
       if (promptData) {
         setAiPrompts(promptData);
       }
+
+      // Fetch Ollama local models from database
+      await fetchOllamaModels();
     } catch (error) {
       console.error('Error loading settings:', error);
     } finally {
@@ -660,7 +855,7 @@ export default function Settings() {
       const cleanAiSettings = {
         enabled: !!aiSettings.enabled,
         ollama_endpoint: aiSettings.ollama_endpoint?.trim() || 'http://localhost:11434/api/generate',
-        model_name: aiSettings.model_name?.trim() || 'gemma4:12b',
+        model_name: aiSettings.model_name?.trim() || 'qwen2.5:3b',
         temperature: aiSettings.temperature ?? 0.7,
         max_tokens: aiSettings.max_tokens ?? 2048,
         allow_sensitive_context: !!aiSettings.allow_sensitive_context
@@ -913,6 +1108,7 @@ export default function Settings() {
             { id: 'agents', label: 'AI Agents', icon: Bot },
             { id: 'prompts', label: 'AI Prompts', icon: Zap },
             { id: 'security', label: 'Security', icon: ShieldCheck },
+            { id: 'ollama', label: 'Ollama Models', icon: Server },
           ].map((item) => (
             <button
               key={item.id}
@@ -1110,7 +1306,7 @@ export default function Settings() {
                             } else if (p === 'claude') {
                               setAiSettings(prev => ({...prev, model_name: 'claude-3-5-sonnet'}));
                             } else if (p === 'ollama') {
-                              setAiSettings(prev => ({...prev, model_name: 'gemma4:12b'}));
+                              setAiSettings(prev => ({...prev, model_name: 'qwen2.5:3b'}));
                             }
                           }}
                         >
@@ -1150,8 +1346,15 @@ export default function Settings() {
                           )}
                           {defaultNewAgentProvider === 'ollama' && (
                             <>
-                              <option value="gemma4:12b">Gemma 4 12B</option>
-                              <option value="qwen3:8b">Qwen 3 8B</option>
+                              {ollamaModels.filter(m => m.active).map(m => (
+                                <option key={m.id} value={m.name}>{m.name} ({m.size})</option>
+                              ))}
+                              {ollamaModels.filter(m => m.active).length === 0 && (
+                                <>
+                                  <option value="qwen2.5:3b">qwen2.5:3b (3B)</option>
+                                  <option value="llama3.2">llama3.2 (3B)</option>
+                                </>
+                              )}
                             </>
                           )}
                         </select>
@@ -1346,7 +1549,12 @@ export default function Settings() {
                         <span>Ollama Startup Command</span>
                         <button 
                           onClick={() => {
-                            navigator.clipboard.writeText('$env:OLLAMA_ORIGINS="http://localhost:3000,https://ais-dev-dkobt4keatbfrwa5de7sxh-22129348999.us-central1.run.app"; ollama serve');
+                            const curOrigin = window.location.origin;
+                            const secOrigin = curOrigin.includes('-dev-') 
+                              ? curOrigin.replace('-dev-', '-pre-') 
+                              : curOrigin.replace('-pre-', '-dev-');
+                            const cmd = `$env:OLLAMA_ORIGINS="http://localhost:3000,${curOrigin},${secOrigin},https://nethmanager.netlify.app,https://manager.nethsolutions.com"; ollama serve`;
+                            navigator.clipboard.writeText(cmd);
                             showToast.success('Copied startup command!');
                           }}
                           className="hover:text-amber-400 transition-colors uppercase font-bold text-[8px]"
@@ -1355,7 +1563,13 @@ export default function Settings() {
                         </button>
                       </div>
                       <div className="text-[10px] p-2 bg-black/50 rounded-lg border border-white/5 font-mono text-amber-200/80 break-all leading-normal select-all">
-                        $env:OLLAMA_ORIGINS="http://localhost:3000,https://ais-dev-dkobt4keatbfrwa5de7sxh-22129348999.us-central1.run.app"; ollama serve
+                        {(() => {
+                          const curOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://ais-dev-dkobt4keatbfrwa5de7sxh-22129348999.us-east1.run.app';
+                          const secOrigin = curOrigin.includes('-dev-') 
+                            ? curOrigin.replace('-dev-', '-pre-') 
+                            : curOrigin.replace('-pre-', '-dev-');
+                          return `$env:OLLAMA_ORIGINS="http://localhost:3000,${curOrigin},${secOrigin},https://nethmanager.netlify.app,https://manager.nethsolutions.com"; ollama serve`;
+                        })()}
                       </div>
                       <p className="text-[8px] text-white/25 uppercase font-bold tracking-normal leading-normal">
                         Run this in Windows PowerShell before connecting Ollama to allow web app calls.
@@ -2042,12 +2256,15 @@ export default function Settings() {
 
                         {editingAgent.model_provider === 'ollama' && (
                           <>
-                            <option value="gemma3:4b" className="text-black">gemma3:4b</option>
-                            <option value="gemma4:12b" className="text-black">gemma4:12b</option>
-                            <option value="llama3.2:3b" className="text-black">llama3.2:3b</option>
-                            <option value="llama3:latest" className="text-black">llama3:latest</option>
-                            <option value="qwen2.5-coder:3b-instruct" className="text-black">qwen2.5-coder:3b-instruct</option>
-                            <option value="qwen3:8b" className="text-black">qwen3:8b</option>
+                            {ollamaModels.filter(m => m.active).map(m => (
+                              <option key={m.id} value={m.name} className="text-black">{m.name} ({m.size})</option>
+                            ))}
+                            {ollamaModels.filter(m => m.active).length === 0 && (
+                              <>
+                                <option value="qwen2.5:3b" className="text-black">qwen2.5:3b (3B)</option>
+                                <option value="llama3.2" className="text-black">llama3.2 (3B)</option>
+                              </>
+                            )}
                           </>
                         )}
                       </select>
@@ -2645,6 +2862,165 @@ export default function Settings() {
                   { name: 'user_prompt_template', label: 'User Template (Optional)', type: 'textarea', placeholder: 'Context: {{context}}' },
                   { 
                     name: 'is_active', 
+                    label: 'Status', 
+                    type: 'select',
+                    options: [
+                      { label: 'Active', value: 'true' },
+                      { label: 'Inactive', value: 'false' }
+                    ]
+                  }
+                ]}
+              />
+            </div>
+          )}
+
+          {activeTab === 'ollama' && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-white uppercase tracking-tight flex items-center gap-3">
+                    <Server size={20} className="text-blue-400" /> Ollama Local Models
+                  </h3>
+                  <p className="text-[10px] font-bold text-white/30 uppercase tracking-widest mt-1">
+                    Manage active and reference models available in your local Ollama runtime.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={handleResetOllamaDefaults}
+                    disabled={ollamaLoading}
+                    className="px-4 py-2 border border-white/10 rounded-xl text-[10px] font-black text-white/60 uppercase hover:bg-white/5 hover:text-white transition-all active:scale-95 flex items-center gap-2"
+                  >
+                    <RefreshCw size={14} className={cn(ollamaLoading && "animate-spin")} /> Reset Defaults
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setEditingOllamaModel(null);
+                      setIsOllamaModalOpen(true);
+                    }}
+                    className="px-4 py-2 bg-blue-600 rounded-xl text-[10px] font-black text-white uppercase transition-all active:scale-95 shadow-lg shadow-blue-500/20 flex items-center gap-2"
+                  >
+                    <Plus size={14} /> Add Model
+                  </button>
+                </div>
+              </div>
+
+              {ollamaLoading ? (
+                <div className="p-12 rounded-3xl bg-white/5 border border-white/10 flex flex-col items-center justify-center text-center">
+                  <Loader2 size={32} className="text-blue-500 animate-spin mb-4" />
+                  <p className="text-sm text-white/40 font-medium">Fetching your models configuration...</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {ollamaModels.length === 0 ? (
+                    <div className="col-span-full p-12 rounded-3xl bg-white/5 border border-dashed border-white/10 flex flex-col items-center justify-center text-center">
+                      <Cpu size={32} className="text-white/10 mb-4" />
+                      <p className="text-sm text-white/40 font-medium">No models defined yet.</p>
+                      <p className="text-[10px] text-white/20 mt-1 uppercase font-bold tracking-widest">
+                        Click "Reset Defaults" or "Add Model" to start.
+                      </p>
+                    </div>
+                  ) : (
+                    ollamaModels.map(model => (
+                      <div 
+                        key={model.id} 
+                        className={cn(
+                          "p-6 rounded-3xl border transition-all duration-300 relative overflow-hidden flex flex-col justify-between h-full group",
+                          model.active 
+                            ? "bg-blue-950/20 border-blue-500/30 hover:border-blue-500/50 shadow-xl shadow-blue-950/10" 
+                            : "bg-white/5 border-white/10 hover:border-white/20"
+                        )}
+                      >
+                        {/* Status bar accent */}
+                        <div className={cn(
+                          "absolute top-0 left-0 w-full h-[3px] transition-all duration-300",
+                          model.active ? "bg-blue-500" : "bg-transparent"
+                        )} />
+
+                        <div className="space-y-4">
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <div className="flex items-center gap-2 mb-1">
+                                <h4 className="text-base font-bold text-white tracking-tight">{model.name}</h4>
+                                <span className="px-2.5 py-0.5 rounded-md bg-white/5 text-white/40 text-[9px] font-black uppercase tracking-wider">
+                                  {model.size}
+                                </span>
+                              </div>
+                              <p className="text-[10px] font-bold text-white/20 uppercase tracking-widest">Model Identifier</p>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => {
+                                  setEditingOllamaModel(model);
+                                  setIsOllamaModalOpen(true);
+                                }}
+                                className="p-1.5 text-white/40 hover:text-white transition-colors"
+                                title="Edit"
+                              >
+                                <Edit3 size={14} />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteOllamaModel(model.id)}
+                                className="p-1.5 text-white/40 hover:text-red-400 transition-colors"
+                                title="Delete"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </div>
+
+                          {model.best_for && (
+                            <p className="text-xs text-white/60 leading-relaxed font-medium">
+                              {model.best_for}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="mt-6 pt-4 border-t border-white/5 flex items-center justify-between">
+                          <span className={cn(
+                            "text-[9px] font-black uppercase tracking-[0.15em]",
+                            model.active ? "text-blue-400" : "text-white/20"
+                          )}>
+                            {model.active ? '● Active in App' : '○ Inactive'}
+                          </span>
+                          <button
+                            onClick={() => handleToggleOllamaActive(model.id, model.active)}
+                            className={cn(
+                              "px-3.5 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all duration-300 active:scale-95",
+                              model.active 
+                                ? "bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20" 
+                                : "bg-white/5 text-white/40 border border-white/5 hover:bg-white/10 hover:text-white"
+                            )}
+                          >
+                            {model.active ? 'Deactivate' : 'Activate'}
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+
+              <CreateModal
+                isOpen={isOllamaModalOpen}
+                onClose={() => {
+                  setIsOllamaModalOpen(false);
+                  setEditingOllamaModel(null);
+                }}
+                title={editingOllamaModel ? 'Edit Ollama Model' : 'Add Ollama Model'}
+                onSubmit={handleSaveOllamaModel}
+                mode={editingOllamaModel ? 'edit' : 'create'}
+                initialValues={editingOllamaModel ? {
+                  ...editingOllamaModel,
+                  active: String(editingOllamaModel.active)
+                } : { active: 'false' }}
+                fields={[
+                  { name: 'name', label: 'Model Tag/Name', type: 'text', placeholder: 'e.g. qwen2.5:3b' },
+                  { name: 'size', label: 'Model Size', type: 'text', placeholder: 'e.g. 3B, 8B, 1.5B' },
+                  { name: 'best_for', label: 'Description / Best For', type: 'text', placeholder: 'e.g. High speed light reasoning' },
+                  { 
+                    name: 'active', 
                     label: 'Status', 
                     type: 'select',
                     options: [

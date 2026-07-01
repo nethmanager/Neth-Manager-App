@@ -1128,6 +1128,95 @@ CREATE INDEX IF NOT EXISTS idx_agent_activity_events_convo ON public.agent_activ
 CREATE INDEX IF NOT EXISTS idx_agent_activity_events_action ON public.agent_activity_events(pending_action_id);
 
 
+-- =========================================================================
+-- NETH MANAGER UPGRADES: VECTOR SIMILARITY SEARCH (pgvector)
+-- =========================================================================
 
+-- Enable pgvector
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- Create Knowledge Table for conceptual memory
+CREATE TABLE IF NOT EXISTS public.neth_knowledge (
+  id BIGSERIAL PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  content TEXT NOT NULL,
+  embedding VECTOR(768), -- Matches standard embedding model dimensions
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable Row Level Security (RLS) on neth_knowledge
+ALTER TABLE public.neth_knowledge ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can manage their own knowledge" ON public.neth_knowledge;
+CREATE POLICY "Users can manage their own knowledge"
+ON public.neth_knowledge
+FOR ALL
+TO authenticated
+USING (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+-- Create Index for vector search (Cosine Distance)
+CREATE INDEX IF NOT EXISTS idx_neth_knowledge_embedding ON public.neth_knowledge USING hnsw (embedding vector_cosine_ops);
+
+-- Create match_neth_data function for concept matching
+CREATE OR REPLACE FUNCTION public.match_neth_data(
+  query_embedding VECTOR(768),
+  match_threshold FLOAT,
+  match_count INT,
+  p_user_id UUID DEFAULT NULL
+)
+RETURNS TABLE (
+  id BIGINT,
+  content TEXT,
+  similarity FLOAT
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT 
+    neth_knowledge.id, 
+    neth_knowledge.content, 
+    1 - (neth_knowledge.embedding <=> query_embedding) AS similarity
+  FROM public.neth_knowledge
+  WHERE 
+    (p_user_id IS NULL OR neth_knowledge.user_id = p_user_id)
+    AND 1 - (neth_knowledge.embedding <=> query_embedding) > match_threshold
+  ORDER BY similarity DESC
+  LIMIT match_count;
+END;
+$$;
+
+
+-- =========================================================================
+-- OLLAMA MODELS DB PERSISTENCE
+-- =========================================================================
+
+-- Ollama Models Table
+CREATE TABLE IF NOT EXISTS public.ollama_models (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  name TEXT NOT NULL,
+  size TEXT NOT NULL,
+  active BOOLEAN DEFAULT false NOT NULL,
+  best_for TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS on ollama_models
+ALTER TABLE public.ollama_models ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can manage their own ollama models" ON public.ollama_models;
+CREATE POLICY "Users can manage their own ollama models"
+ON public.ollama_models
+FOR ALL
+TO authenticated
+USING (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+-- Create Index for ollama_models user_id
+CREATE INDEX IF NOT EXISTS idx_ollama_models_user_id ON public.ollama_models(user_id);
 
 
